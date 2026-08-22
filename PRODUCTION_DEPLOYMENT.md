@@ -77,7 +77,7 @@ NODE_ENV = production
 PORT = 5000
 
 OWNER_EMAIL = issam.salih@gmail.com
-CLAUDE_API_KEY = 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
+CLAUDE_API_KEY = sk-ant-v0-XXXXX (get from https://console.anthropic.com)
 
 TIKTOK_CLIENT_ID = (leave blank for now)
 TIKTOK_CLIENT_SECRET = (leave blank for now)
