@@ -1,0 +1,17 @@
+{
+  "name": "sams-social-system",
+  "version": "0.7.0",
+  "description": "Sam's Autonomous Social Media System - Production Ready",
+  "main": "backend/src/index.js",
+  "scripts": {
+    "start": "node backend/src/index.js",
+    "dev": "node backend/src/index.js",
+    "postinstall": "cd backend && npm install"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["social-media", "autonomous", "tiktok", "instagram", "facebook", "youtube"],
+  "author": "issam.salih@gmail.com",
+  "license": "MIT"
+}
