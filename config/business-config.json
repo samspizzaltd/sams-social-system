@@ -1,0 +1,145 @@
+{
+  "restaurant": {
+    "name": "Sam's",
+    "legalName": "Sam's Pizza LTD",
+    "tagline": "More Than Pizza.",
+    "description": "Pizza, Grill & the taste of the Middle East",
+    "legalId": "406255127"
+  },
+  "location": {
+    "address": "100 Mirian Mepe St, Didi Dighomi, Tbilisi 0114",
+    "city": "Tbilisi",
+    "country": "Georgia",
+    "coordinates": {
+      "lat": 41.7151,
+      "lng": 44.8271
+    }
+  },
+  "contact": {
+    "phone": "+995 555 63 33 66",
+    "email": "info@sams.ge",
+    "website": "https://sams.ge",
+    "whatsapp": "995555633366"
+  },
+  "hours": {
+    "monday": { "open": "10:00", "close": "21:00" },
+    "tuesday": { "open": "10:00", "close": "21:00" },
+    "wednesday": { "open": "10:00", "close": "21:00" },
+    "thursday": { "open": "10:00", "close": "21:00" },
+    "friday": { "open": "10:00", "close": "21:00" },
+    "saturday": { "open": "10:00", "close": "21:00" },
+    "sunday": { "open": "10:00", "close": "21:00" }
+  },
+  "branding": {
+    "primaryColor": "#F15C22",
+    "secondaryColor": "#F15C22",
+    "fonts": ["Baloo 2", "Noto Sans Georgian", "Noto Sans Arabic"],
+    "logo": {
+      "favicon": "images/logo/sams-logo.png",
+      "wordmark": "images/logo/sams-wordmark.png",
+      "full": "images/logo/sams-logo-full.png"
+    }
+  },
+  "socials": {
+    "tiktok": {
+      "handle": "@samspizzaltd",
+      "url": "https://www.tiktok.com/@samspizzaltd",
+      "enabled": true
+    },
+    "instagram": {
+      "handle": "@samspi22a",
+      "url": "https://www.instagram.com/samspi22a",
+      "enabled": true
+    },
+    "facebook": {
+      "handle": "samspizzaa",
+      "url": "https://www.facebook.com/samspizzaa",
+      "enabled": true
+    },
+    "youtube": {
+      "handle": "",
+      "url": "",
+      "enabled": false
+    }
+  },
+  "delivery": {
+    "platforms": [
+      {
+        "name": "Wolt",
+        "url": "https://wolt.com/en/geo/tbilisi/restaurant/sams-pizza",
+        "enabled": true
+      },
+      {
+        "name": "Sindbad.ge",
+        "url": "https://sindbad.ge",
+        "enabled": true
+      }
+    ]
+  },
+  "certifications": {
+    "halal": {
+      "certified": false,
+      "certifier": null,
+      "number": null,
+      "expiryDate": null
+    }
+  },
+  "rating": {
+    "value": 4.7,
+    "reviewCount": 160,
+    "source": "Restaurant Guru"
+  },
+  "owner": {
+    "name": "Issam Salih",
+    "email": "issam.salih@gmail.com",
+    "phone": "+995 555 626 622",
+    "role": "Owner/Approver"
+  },
+  "strategy": {
+    "markets": ["International"],
+    "primaryLanguages": ["Georgian", "English", "Arabic"],
+    "contentMix": {
+      "entertainment": 40,
+      "productDesire": 25,
+      "brandPersonality": 15,
+      "educational": 10,
+      "directConversion": 10
+    },
+    "postingLimits": {
+      "tiktok": 3,
+      "instagram": 2,
+      "facebook": 2,
+      "youtube": 1
+    },
+    "approvalRequired": true,
+    "autoPublishCategories": []
+  },
+  "budget": {
+    "monthly": 500,
+    "currency": "₾",
+    "priority": "lowest-cost",
+    "breakdown": {
+      "api": 50,
+      "hosting": 100,
+      "database": 50,
+      "storage": 50,
+      "reserve": 250
+    }
+  },
+  "goals": {
+    "2026": {
+      "followers": {
+        "tiktok": 50000,
+        "instagram": 10000
+      },
+      "engagement": 0.05
+    },
+    "2027": {
+      "followers": {
+        "tiktok": 500000,
+        "instagram": 100000
+      },
+      "engagement": 0.08
+    }
+  }
+}
