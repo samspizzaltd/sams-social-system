@@ -9,9 +9,9 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Database connection pool
-const db = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+// const db = new Pool({
+//   connectionString: process.env.DATABASE_URL,
+// });
 
 // Middleware
 app.use(cors());
@@ -137,16 +137,16 @@ const server = app.listen(port, async () => {
   `);
 
   // Initialize SystemOrchestrator
-  orchestrator = new SystemOrchestrator(
-    process.env.CLAUDE_API_KEY,
-    process.env.OWNER_EMAIL || 'issam.salih@gmail.com'
-  );
+  // orchestrator = new SystemOrchestrator(
+  //   process.env.CLAUDE_API_KEY,
+  //   process.env.OWNER_EMAIL || 'issam.salih@gmail.com'
+  // );
 
-  try {
-    await orchestrator.initialize();
-  } catch (error) {
-    console.error('Failed to initialize orchestrator:', error.message);
-  }
+  // try {
+  //   await orchestrator.initialize();
+  // } catch (error) {
+  //   console.error('Failed to initialize orchestrator:', error.message);
+  // }
 });
 
 module.exports = { app, db, orchestrator };
