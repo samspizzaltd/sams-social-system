@@ -1,22 +1,22 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
-const authRoutes = require('./routes/auth');
 
 const app = express();
 const port = process.env.PORT || 3000;
-
-// Database connection pool
-// const db = new Pool({
-//   connectionString: process.env.DATABASE_URL,
-// });
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Routes
-app.use('/auth', authRoutes);
+// Import routes safely
+let authRoutes;
+try {
+  authRoutes = require('./routes/auth');
+  app.use('/auth', authRoutes);
+} catch (err) {
+  console.error('Failed to load auth routes:', err.message);
+}
 
 // System Orchestrator (all 7 phases)
 let orchestrator = null;
@@ -122,29 +122,8 @@ app.use((err, req, res, next) => {
 });
 
 // Server startup
-const server = app.listen(port, async () => {
-  console.log(`
-╔════════════════════════════════════════════════════════╗
-║   Sam's Autonomous Social Media System                 ║
-║   Phases 1-7: Full Stack Implementation                ║
-║                                                        ║
-║   Server running on: http://localhost:${port}             ║
-║   Environment: ${process.env.NODE_ENV || 'development'}                    ║
-║   Database: Connecting...                              ║
-╚════════════════════════════════════════════════════════╝
-  `);
-
-  // Initialize SystemOrchestrator
-  // orchestrator = new SystemOrchestrator(
-  //   process.env.CLAUDE_API_KEY,
-  //   process.env.OWNER_EMAIL || 'issam.salih@gmail.com'
-  // );
-
-  // try {
-  //   await orchestrator.initialize();
-  // } catch (error) {
-  //   console.error('Failed to initialize orchestrator:', error.message);
-  // }
+const server = app.listen(port, () => {
+  console.log(`Sam's Social System API running on port ${port}`);
 });
 
-module.exports = { app, db, orchestrator };
+module.exports = { app, server };
