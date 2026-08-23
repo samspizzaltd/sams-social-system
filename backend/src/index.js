@@ -9,15 +9,6 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Import routes safely
-let authRoutes;
-try {
-  authRoutes = require('./routes/auth');
-  app.use('/auth', authRoutes);
-} catch (err) {
-  console.error('Failed to load auth routes:', err.message);
-}
-
 // System Orchestrator (all 7 phases)
 let orchestrator = null;
 
@@ -124,6 +115,23 @@ app.use((err, req, res, next) => {
 // Server startup
 const server = app.listen(port, () => {
   console.log(`Sam's Social System API running on port ${port}`);
+  console.log(`Health check: http://localhost:${port}/health`);
+});
+
+// Handle errors
+server.on('error', (err) => {
+  console.error('Server error:', err);
+  process.exit(1);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
+  process.exit(1);
 });
 
 module.exports = { app, server };
