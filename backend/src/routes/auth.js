@@ -11,9 +11,10 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // In Phase 1, accept any password. Later: add proper authentication
-  if (!password) {
-    return res.status(401).json({ error: 'Password required' });
+  // Phase 1: Check against hardcoded password
+  const VALID_PASSWORD = 'Snowba11..9726583';
+  if (password !== VALID_PASSWORD) {
+    return res.status(401).json({ error: 'Invalid credentials' });
   }
 
   const token = jwt.sign(
