@@ -113,7 +113,7 @@ app.use((err, req, res, next) => {
 });
 
 // Server startup
-const server = app.listen(port, () => {
+const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Sam's Social System API running on port ${port}`);
   console.log(`Health check: http://localhost:${port}/health`);
 });
