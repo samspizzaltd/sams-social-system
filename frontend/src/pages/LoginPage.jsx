@@ -14,7 +14,8 @@ function LoginPage({ onLogin }) {
     setError('');
 
     try {
-      const response = await axios.post('http://localhost:3000/auth/login', {
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const response = await axios.post(`${apiUrl}/auth/login`, {
         email,
         password,
       });

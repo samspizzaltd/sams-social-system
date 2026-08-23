@@ -10,7 +10,8 @@ function DashboardPage({ token, onLogout }) {
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const response = await axios.get('http://localhost:3000/auth/me', {
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        const response = await axios.get(`${apiUrl}/auth/me`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         setUser(response.data);
