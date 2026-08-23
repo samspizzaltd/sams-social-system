@@ -14,14 +14,10 @@ const db = new Pool({
 });
 
 // Middleware
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+app.use(cors());
 app.use(express.json());
 
-// Auth routes
+// Routes
 app.use('/auth', authRoutes);
 
 // System Orchestrator (all 7 phases)
