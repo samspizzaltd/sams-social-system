@@ -1,6 +1,6 @@
-import jwt from 'jsonwebtoken';
+const jwt = require('jsonwebtoken');
 
-export const verifyToken = (req, res, next) => {
+const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
 
   if (!token) {
@@ -16,9 +16,11 @@ export const verifyToken = (req, res, next) => {
   }
 };
 
-export const requireOwner = (req, res, next) => {
+const requireOwner = (req, res, next) => {
   if (req.user?.role !== 'owner') {
     return res.status(403).json({ error: 'Owner access required' });
   }
   next();
 };
+
+module.exports = { verifyToken, requireOwner };

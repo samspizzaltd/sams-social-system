@@ -3,6 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const { Pool } = require('pg');
 const SystemOrchestrator = require('./agents/SystemOrchestrator');
+const authRoutes = require('./routes/auth');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -15,6 +16,9 @@ const db = new Pool({
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Auth routes
+app.use('/auth', authRoutes);
 
 // System Orchestrator (all 7 phases)
 let orchestrator = null;

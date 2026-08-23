@@ -1,5 +1,5 @@
-import express from 'express';
-import { verifyToken, requireOwner } from '../middleware/auth.js';
+const express = require('express');
+const { verifyToken, requireOwner } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -37,4 +37,4 @@ router.post('/', verifyToken, requireOwner, (req, res) => {
   });
 });
 
-export default router;
+module.exports = router;

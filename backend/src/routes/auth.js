@@ -1,5 +1,5 @@
-import express from 'express';
-import jwt from 'jsonwebtoken';
+const express = require('express');
+const jwt = require('jsonwebtoken');
 
 const router = express.Router();
 
@@ -44,4 +44,4 @@ router.get('/me', (req, res) => {
   }
 });
 
-export default router;
+module.exports = router;
