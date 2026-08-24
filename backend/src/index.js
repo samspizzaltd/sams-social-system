@@ -14,6 +14,7 @@ const authRoutes = require('./routes/auth');
 app.use('/auth', authRoutes);
 
 // System Orchestrator (all 7 phases)
+const SystemOrchestrator = require('./agents/SystemOrchestrator');
 let orchestrator = null;
 
 // Health check
@@ -73,38 +74,51 @@ app.get('/api/agents', async (req, res) => {
 
   res.json({
     agents: {
-      intelligence: {
-        phase: 2,
-        status: 'running',
-        components: ['ResearchEngine', 'ContentVault']
-      },
-      production: {
-        phase: 3,
-        status: 'running',
-        components: ['ContentCreationEngine', 'ApprovalWorkflow']
-      },
-      publishing: {
-        phase: 4,
-        status: 'running',
-        components: ['TikTok', 'Instagram', 'Facebook', 'YouTube']
-      },
-      analytics: {
-        phase: 5,
-        status: 'running',
-        components: ['DataSync', 'PerformanceDashboard', 'EngagementAnalysis']
-      },
-      learning: {
-        phase: 6,
-        status: 'running',
-        components: ['PatternDetector', 'ABTestFramework', 'StrategyOptimizer']
-      },
-      monetization: {
-        phase: 7,
-        status: 'running',
-        components: ['EligibilityChecker', 'RevenueTracker', 'OpportunityAlert']
-      }
+      intelligence: { phase: 2, status: 'running', components: ['ResearchEngine', 'ContentVault'] },
+      production: { phase: 3, status: 'running', components: ['ContentCreationEngine', 'ApprovalWorkflow'] },
+      publishing: { phase: 4, status: 'running', components: ['TikTok', 'Instagram', 'Facebook', 'YouTube'] },
+      analytics: { phase: 5, status: 'running', components: ['DataSync', 'PerformanceDashboard', 'EngagementAnalysis'] },
+      learning: { phase: 6, status: 'running', components: ['PatternDetector', 'ABTestFramework', 'StrategyOptimizer'] },
+      monetization: { phase: 7, status: 'running', components: ['EligibilityChecker', 'RevenueTracker', 'OpportunityAlert'] }
     }
   });
+});
+
+// Run autonomous cycle
+app.post('/api/cycle/run', async (req, res) => {
+  if (!orchestrator) {
+    orchestrator = new SystemOrchestrator(process.env.CLAUDE_API_KEY, process.env.OWNER_EMAIL);
+  }
+
+  try {
+    const cycle = await orchestrator.runAutonomousCycle();
+    res.json({ success: true, cycle });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get cycle status
+app.get('/api/cycle/:cycleId', async (req, res) => {
+  if (!orchestrator) {
+    return res.status(503).json({ error: 'System not initialized' });
+  }
+
+  const cycle = orchestrator.getCycles().find(c => c.id === req.params.cycleId);
+  if (!cycle) {
+    return res.status(404).json({ error: 'Cycle not found' });
+  }
+
+  res.json(cycle);
+});
+
+// Get all cycles
+app.get('/api/cycles', async (req, res) => {
+  if (!orchestrator) {
+    orchestrator = new SystemOrchestrator(process.env.CLAUDE_API_KEY, process.env.OWNER_EMAIL);
+  }
+
+  res.json({ cycles: orchestrator.getCycles() });
 });
 
 // Error handling
@@ -120,6 +134,11 @@ app.use((err, req, res, next) => {
 const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Sam's Social System API running on port ${port}`);
   console.log(`Health check: http://localhost:${port}/health`);
+
+  // Initialize SystemOrchestrator
+  orchestrator = new SystemOrchestrator(process.env.CLAUDE_API_KEY, process.env.OWNER_EMAIL);
+  console.log('✓ System Orchestrator initialized');
+  console.log('✓ All 7 phases ready (Intelligence → Production → Distribution → Analytics → Optimization → Monetization)');
 });
 
 // Handle errors
