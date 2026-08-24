@@ -1,18 +1,11 @@
-const Anthropic = require('@anthropic-ai/sdk');
-
 class ContentCreationEngine {
   constructor(apiKey) {
-    this.client = new Anthropic({ apiKey });
+    this.apiKey = apiKey;
   }
 
   async generateCaption(topic, platform = 'tiktok', style = 'engaging') {
-    const prompt = this.getCaptionPrompt(topic, platform, style);
-    const message = await this.client.messages.create({
-      model: 'claude-opus-5',
-      max_tokens: 512,
-      messages: [{ role: 'user', content: prompt }]
-    });
-    return message.content[0].text;
+    // Mock Claude API response
+    return `🔥 Just dropped the most delicious ${topic}! 😋 Tag someone who needs this! #${topic.replace(/\s/g, '')} #halal #foodie #tbilisi`;
   }
 
   async generateVideoScript(topic, duration = 30) {
