@@ -9,6 +9,10 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Routes
+const authRoutes = require('./routes/auth');
+app.use('/auth', authRoutes);
+
 // System Orchestrator (all 7 phases)
 let orchestrator = null;
 
