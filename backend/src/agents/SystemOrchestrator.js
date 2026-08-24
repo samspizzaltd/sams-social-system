@@ -4,6 +4,7 @@ const { MultiPlatformPublisher } = require('./Phase4Distribution');
 const { DataSyncAgent, PerformanceDashboard, EngagementAnalyzer } = require('./Phase5Analytics');
 const { PatternDetector, ABTestFramework, StrategyOptimizer } = require('./Phase6Optimization');
 const { EligibilityChecker, RevenueTracker, OpportunityAlert } = require('./Phase7Monetization');
+const cycleRepository = require('../database/cycleRepository');
 
 class SystemOrchestrator {
   constructor(claudeApiKey, ownerEmail) {
@@ -50,13 +51,21 @@ class SystemOrchestrator {
   }
 
   async runAutonomousCycle() {
+    // Cycle numbering continues across restarts when the database is available.
+    const priorHistory = await cycleRepository.history();
+    const nextNumber = priorHistory
+      ? priorHistory.cyclesCompleted + 1
+      : this.cycles.length + 1;
+
     const cycle = {
       id: Math.random().toString(36).substr(2, 9),
-      number: this.cycles.length + 1,
+      number: nextNumber,
       startedAt: new Date(),
       phases: {},
       status: 'running'
     };
+
+    let produced = [];
 
     try {
       // ---- Phase 2: Intelligence ----
@@ -77,7 +86,6 @@ class SystemOrchestrator {
       };
 
       // ---- Phase 3: Production ----
-      const produced = [];
       for (const idea of ideas) {
         const caption = await this.contentCreator.generateCaption(idea.title);
         const script = await this.contentCreator.generateVideoScript(idea.title, 30);
@@ -167,7 +175,18 @@ class SystemOrchestrator {
         optimalPostingTimes: patterns.bestTimes,
         trendingTopics: trendingTopics.trending,
         recommendations: strategy.recommendations,
-        abTest: { name: testResult.name, winner: testResult.winner }
+        abTest: { name: testResult.name, winner: testResult.winner },
+        // Phase 6 can only truly learn once there is stored history to compare against.
+        learnedFrom: priorHistory
+          ? {
+              priorCycles: priorHistory.cyclesCompleted,
+              avgEngagementPerCycle: priorHistory.avgEngagementPerCycle,
+              trendVsAverage:
+                priorHistory.avgEngagementPerCycle > 0
+                  ? (metrics.totalEngagement >= priorHistory.avgEngagementPerCycle ? 'above' : 'below')
+                  : 'no baseline'
+            }
+          : { priorCycles: 0, note: 'no stored history - persistence unavailable' }
       };
 
       // ---- Phase 7: Monetization ----
@@ -198,7 +217,22 @@ class SystemOrchestrator {
 
     cycle.completedAt = new Date();
     cycle.durationMs = cycle.completedAt - cycle.startedAt;
+
+    // Persistence is best-effort: a database problem must never fail a cycle.
+    try {
+      cycle.persisted = await cycleRepository.save(cycle);
+      if (cycle.persisted) {
+        await cycleRepository.saveContent(cycle.id, produced);
+      }
+    } catch (err) {
+      cycle.persisted = false;
+      cycle.persistError = err.message;
+    }
+
     this.cycles.push(cycle);
+    // Keep the in-memory buffer bounded; the database is the durable record.
+    if (this.cycles.length > 50) this.cycles = this.cycles.slice(-50);
+
     return cycle;
   }
 

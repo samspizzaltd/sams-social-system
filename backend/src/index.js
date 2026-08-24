@@ -4,6 +4,8 @@ require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
 const SystemOrchestrator = require('./agents/SystemOrchestrator');
+const db = require('./database/db');
+const cycleRepository = require('./database/cycleRepository');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -18,13 +20,36 @@ const orchestrator = new SystemOrchestrator(
 );
 
 app.get('/health', (req, res) => {
+  const dbStatus = db.status();
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     service: 'sams-social-backend',
     orchestrator: orchestrator.status,
-    cyclesRun: orchestrator.getCycles().length
+    cyclesRunThisProcess: orchestrator.getCycles().length,
+    persistence: dbStatus.available ? 'mysql' : 'in-memory only',
+    database: dbStatus
   });
+});
+
+// Database diagnostics - lets us confirm persistence remotely without a shell.
+app.get('/api/db/status', async (req, res) => {
+  const status = db.status();
+  const stored = await cycleRepository.history();
+  res.json({ database: status, storedHistory: stored });
+});
+
+// Durable cycle history (survives restarts)
+app.get('/api/history', async (req, res) => {
+  const summary = await cycleRepository.history();
+  const recent = await cycleRepository.recent(req.query.limit);
+  if (summary === null && recent === null) {
+    return res.status(503).json({
+      error: 'Persistence unavailable',
+      database: db.status()
+    });
+  }
+  res.json({ summary, recent });
 });
 
 app.get('/api/status', async (req, res) => {
@@ -71,6 +96,10 @@ app.use((err, req, res, next) => {
 const server = app.listen(port, '0.0.0.0', () => {
   console.log("Sam's Social System API running on port " + port);
   console.log('All 7 phases ready: Intelligence -> Production -> Distribution -> Analytics -> Optimization -> Monetization');
+
+  // Connect and migrate after the server is already accepting traffic, so a
+  // database problem degrades persistence rather than taking the API down.
+  db.init().catch(err => console.warn('[db] init failed: ' + err.message));
 });
 
 server.on('error', (err) => {
