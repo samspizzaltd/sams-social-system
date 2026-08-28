@@ -1,35 +1,4 @@
-class ContentCreationEngine {
-  constructor(apiKey) { this.apiKey = apiKey; }
-
-  async generateCaption(topic, platform = 'tiktok') {
-    const tag = String(topic).replace(/[^a-zA-Z0-9]/g, '');
-    return `Fresh out of the kitchen: ${topic}! Tag someone who needs this today. #${tag} #halal #foodie #tbilisi`;
-  }
-
-  async generateVideoScript(topic, duration = 30) {
-    return {
-      duration,
-      beats: [
-        { at: '0:00', type: 'hook', text: `POV: you just found the best ${topic} in Tbilisi` },
-        { at: '0:03', type: 'body', text: `Close-up of ${topic} being prepared. Natural sound, no music over the sizzle.` },
-        { at: `0:${duration - 5}`, type: 'cta', text: 'Comment "HUNGRY" and we will save you a table.' }
-      ]
-    };
-  }
-
-  async generateCarouselPost(topic) {
-    return [1, 2, 3, 4, 5].map(n => ({
-      slide: n,
-      visual: `Slide ${n} visual for ${topic}`,
-      caption: `${topic} — point ${n}`,
-      cta: n === 5 ? 'Visit us today' : null
-    }));
-  }
-
-  async generateProductDescription(productName, ingredients = []) {
-    return `${productName} — made with ${ingredients.join(', ') || 'fresh halal ingredients'}. Prepared to order, served hot.`;
-  }
-}
+const { ContentCreationEngine } = require('./ContentCreationEngine');
 
 class ApprovalWorkflow {
   constructor() { this.queue = []; this.approved = []; this.rejected = []; }

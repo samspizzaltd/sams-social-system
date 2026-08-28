@@ -6,6 +6,7 @@ const authRoutes = require('./routes/auth');
 const SystemOrchestrator = require('./agents/SystemOrchestrator');
 const db = require('./database/db');
 const cycleRepository = require('./database/cycleRepository');
+const claude = require('./services/claudeClient');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -28,7 +29,9 @@ app.get('/health', (req, res) => {
     orchestrator: orchestrator.status,
     cyclesRunThisProcess: orchestrator.getCycles().length,
     persistence: dbStatus.available ? 'mysql' : 'in-memory only',
-    database: dbStatus
+    contentGeneration: claude.status().available ? 'claude' : 'fallback templates',
+    database: dbStatus,
+    claude: claude.status()
   });
 });
 
@@ -100,6 +103,7 @@ const server = app.listen(port, '0.0.0.0', () => {
   // Connect and migrate after the server is already accepting traffic, so a
   // database problem degrades persistence rather than taking the API down.
   db.init().catch(err => console.warn('[db] init failed: ' + err.message));
+  claude.init();
 });
 
 server.on('error', (err) => {
