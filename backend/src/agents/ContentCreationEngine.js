@@ -50,8 +50,6 @@ class ContentCreationEngine {
         properties: {
           beats: {
             type: 'array',
-            minItems: 1,
-            maxItems: 8,
             items: {
               type: 'object',
               additionalProperties: false,
@@ -91,8 +89,6 @@ class ContentCreationEngine {
         properties: {
           slides: {
             type: 'array',
-            minItems: 1,
-            maxItems: 6,
             items: {
               type: 'object',
               additionalProperties: false,

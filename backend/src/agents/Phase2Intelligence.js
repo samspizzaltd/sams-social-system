@@ -22,10 +22,10 @@ class ResearchEngine {
         additionalProperties: false,
         required: ['hashtags', 'bestTimes', 'trends', 'seasonal'],
         properties: {
-          hashtags: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 },
-          bestTimes: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 4 },
-          trends: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 6 },
-          seasonal: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 4 }
+          hashtags: { type: 'array', items: { type: 'string' } },
+          bestTimes: { type: 'array', items: { type: 'string' } },
+          trends: { type: 'array', items: { type: 'string' } },
+          seasonal: { type: 'array', items: { type: 'string' } }
         }
       }
     });
@@ -78,7 +78,7 @@ class ResearchEngine {
         additionalProperties: false,
         required: ['hashtags'],
         properties: {
-          hashtags: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10 }
+          hashtags: { type: 'array', items: { type: 'string' } }
         }
       }
     });
@@ -108,8 +108,6 @@ class ContentVault {
         properties: {
           ideas: {
             type: 'array',
-            minItems: 1,
-            maxItems: 6,
             items: {
               type: 'object',
               additionalProperties: false,
@@ -163,8 +161,8 @@ class CompetitorTracker {
         additionalProperties: false,
         required: ['gaps', 'opportunities'],
         properties: {
-          gaps: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 5 },
-          opportunities: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 5 }
+          gaps: { type: 'array', items: { type: 'string' } },
+          opportunities: { type: 'array', items: { type: 'string' } }
         }
       }
     });
@@ -194,8 +192,6 @@ class TrendAnalyzer {
         properties: {
           trends: {
             type: 'array',
-            minItems: 1,
-            maxItems: 6,
             items: {
               type: 'object',
               additionalProperties: false,
