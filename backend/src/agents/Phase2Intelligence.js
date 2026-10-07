@@ -22,10 +22,10 @@ class ResearchEngine {
         additionalProperties: false,
         required: ['hashtags', 'bestTimes', 'trends', 'seasonal'],
         properties: {
-          hashtags: { type: 'array', items: { type: 'string' }, minItems: 5, maxItems: 8 },
-          bestTimes: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 4 },
-          trends: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 6 },
-          seasonal: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 4 }
+          hashtags: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 },
+          bestTimes: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 4 },
+          trends: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 6 },
+          seasonal: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 4 }
         }
       }
     });
@@ -78,7 +78,7 @@ class ResearchEngine {
         additionalProperties: false,
         required: ['hashtags'],
         properties: {
-          hashtags: { type: 'array', items: { type: 'string' }, minItems: 5, maxItems: 10 }
+          hashtags: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10 }
         }
       }
     });
@@ -163,8 +163,8 @@ class CompetitorTracker {
         additionalProperties: false,
         required: ['gaps', 'opportunities'],
         properties: {
-          gaps: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 5 },
-          opportunities: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 5 }
+          gaps: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 5 },
+          opportunities: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 5 }
         }
       }
     });
@@ -194,7 +194,7 @@ class TrendAnalyzer {
         properties: {
           trends: {
             type: 'array',
-            minItems: 2,
+            minItems: 1,
             maxItems: 6,
             items: {
               type: 'object',
