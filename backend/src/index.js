@@ -3,6 +3,8 @@ const cors = require('cors');
 require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
+const controlRoutes = require('./routes/control');
+const { verifyToken } = require('./middleware/auth');
 const SystemOrchestrator = require('./agents/SystemOrchestrator');
 const db = require('./database/db');
 const cycleRepository = require('./database/cycleRepository');
@@ -11,16 +13,17 @@ const claude = require('./services/claudeClient');
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors());
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ||
+  'https://sams-social-system.vercel.app,http://localhost:5173,http://localhost:4173'
+).split(',').map(o => o.trim());
+app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json());
 app.use('/auth', authRoutes);
+app.use('/api', verifyToken);
+app.use('/api', controlRoutes);
 
-const orchestrator = new SystemOrchestrator(
-  process.env.CLAUDE_API_KEY,
-  process.env.OWNER_EMAIL || 'issam.salih@gmail.com'
-);
-
-app.get('/health', (req, res) => {
+// Full system diagnostics (JWT-protected; public /health is deliberately slim)
+app.get('/api/system', (req, res) => {
   const dbStatus = db.status();
   res.json({
     status: 'ok',
@@ -33,6 +36,15 @@ app.get('/health', (req, res) => {
     database: dbStatus,
     claude: claude.status()
   });
+});
+
+const orchestrator = new SystemOrchestrator(
+  process.env.CLAUDE_API_KEY,
+  process.env.OWNER_EMAIL || 'issam.salih@gmail.com'
+);
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'sams-social-backend' });
 });
 
 // Database diagnostics - lets us confirm persistence remotely without a shell.
@@ -64,12 +76,24 @@ app.get('/api/status', async (req, res) => {
 });
 
 app.get('/api/agents', async (req, res) => {
-  const health = await orchestrator.getSystemHealth();
-  res.json({ agents: health.agents });
+  try {
+    const health = await orchestrator.getSystemHealth();
+    res.json({ agents: health.agents });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Run one full 7-phase autonomous cycle
+let cycleInProgress = false;
+let cycleStartedAt = 0;
+const CYCLE_WATCHDOG_MS = 15 * 60 * 1000; // a hung cycle must not block runs forever
 app.post('/api/cycle/run', async (req, res) => {
+  if (cycleInProgress && Date.now() - cycleStartedAt < CYCLE_WATCHDOG_MS) {
+    return res.status(409).json({ error: 'A cycle is already running' });
+  }
+  cycleInProgress = true;
+  cycleStartedAt = Date.now();
   try {
     const cycle = await orchestrator.runAutonomousCycle();
     res.status(cycle.status === 'completed' ? 200 : 500).json({
@@ -78,7 +102,14 @@ app.post('/api/cycle/run', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  } finally {
+    cycleInProgress = false;
   }
+});
+
+app.get('/api/cycle/in-progress', (req, res) => {
+  const running = cycleInProgress && Date.now() - cycleStartedAt < CYCLE_WATCHDOG_MS;
+  res.json({ running });
 });
 
 app.get('/api/cycles', (req, res) => {

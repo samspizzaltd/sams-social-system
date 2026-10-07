@@ -14,7 +14,10 @@ function toSqlDate(value) {
   if (!value) return null;
   const d = value instanceof Date ? value : new Date(value);
   if (isNaN(d.getTime())) return null;
-  return d.toISOString().slice(0, 19).replace('T', ' ');
+  // Local server time, matching MySQL NOW()-based TIMESTAMP columns.
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+    ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
 }
 
 async function save(cycle) {

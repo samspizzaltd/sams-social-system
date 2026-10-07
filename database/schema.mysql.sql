@@ -95,3 +95,15 @@ CREATE TABLE IF NOT EXISTS branding (
   cfg_value  TEXT,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS revenue (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  platform    VARCHAR(50) NOT NULL,
+  source      VARCHAR(50) NOT NULL,
+  amount      DECIMAL(12,2) NOT NULL,
+  currency    VARCHAR(10) DEFAULT 'GEL',
+  note        VARCHAR(500) NULL,
+  recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_revenue_platform (platform),
+  INDEX idx_revenue_recorded (recorded_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

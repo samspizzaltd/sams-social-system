@@ -50,6 +50,9 @@ async function init() {
       user: cfg.user,
       password: cfg.password,
       database: cfg.database,
+      // Return DATETIME/TIMESTAMP as plain 'YYYY-MM-DD HH:MM:SS' strings so
+      // grouping and JSON serialization never pass through local-timezone Dates.
+      dateStrings: true,
       waitForConnections: true,
       connectionLimit: 5,
       connectTimeout: 5000
@@ -111,6 +114,10 @@ async function query(sql, params) {
     return rows;
   } catch (err) {
     state.lastError = err.message;
+    // A dead connection means persistence is gone, not just one bad query.
+    if (err.code === 'ECONNREFUSED' || err.code === 'PROTOCOL_CONNECTION_LOST' || err.code === 'ETIMEDOUT' || err.fatal) {
+      state.available = false;
+    }
     console.warn('[db] query failed: ' + err.message);
     return null;
   }
