@@ -13,7 +13,9 @@ const DEFAULTS = {
   audience_location: 'Tbilisi, Georgia',
   audience_age: '18-40',
   audience_gender: 'all',
-  audience_notes: ''
+  audience_notes: '',
+  style_notes: '',
+  music_notes: ''
 };
 
 let cache = null;
@@ -54,8 +56,18 @@ async function voiceLine() {
   return c.brand_voice;
 }
 
+// Observed posting style of the real accounts - injected into writer prompts.
+async function styleLine() {
+  const c = await get();
+  const parts = [];
+  if (c.style_notes) parts.push('Proven content style: ' + c.style_notes);
+  if (c.posting_cadence) parts.push('Posting schedule: ' + c.posting_cadence);
+  if (c.music_notes) parts.push('Music approach: ' + c.music_notes);
+  return parts.join(' ');
+}
+
 function invalidate() {
   cache = null;
 }
 
-module.exports = { get, audienceLine, voiceLine, invalidate, DEFAULTS };
+module.exports = { get, audienceLine, voiceLine, styleLine, invalidate, DEFAULTS };

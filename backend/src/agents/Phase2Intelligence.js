@@ -11,7 +11,7 @@ class ResearchEngine {
 
   async researchTrends() {
     const generated = await claude.generateJSON({
-      system: 'You are a social media strategist for ' + BUSINESS + ' ' + (await brandConfig.audienceLine()),
+      system: 'You are a social media strategist for ' + BUSINESS + ' ' + (await brandConfig.audienceLine()) + ' ' + (await brandConfig.styleLine()),
       prompt:
         'Identify social media trends worth acting on this week for this restaurant. ' +
         'Give hashtags actually used in the Georgian and halal food scene, realistic ' +

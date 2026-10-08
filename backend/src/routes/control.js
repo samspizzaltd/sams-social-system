@@ -105,6 +105,7 @@ router.delete('/revenue/:id', async (req, res) => {
 const SETTING_KEYS = [
   'brand_voice', 'posting_cadence', 'auto_approve_threshold',
   'audience_location', 'audience_age', 'audience_gender', 'audience_notes',
+  'style_notes', 'music_notes',
   'platform_tiktok_enabled', 'platform_instagram_enabled',
   'platform_facebook_enabled', 'platform_youtube_enabled'
 ];
