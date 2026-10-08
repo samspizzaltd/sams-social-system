@@ -16,3 +16,8 @@ yarn-error.log
 package-lock.json
 yarn.lock
 .claude/
+media/
+video/node_modules/
+video/out/
+video/public/jobs/
+video/.env

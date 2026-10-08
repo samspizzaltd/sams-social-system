@@ -431,7 +431,11 @@ export function SettingsSection({ view }) {
     const FIELDS = [
       { key: 'brand_voice', label: 'Brand voice', placeholder: 'Warm, direct, a little playful. No corporate filler.' },
       { key: 'posting_cadence', label: 'Posting cadence', placeholder: 'e.g. 2 posts/day, lunch + evening' },
-      { key: 'auto_approve_threshold', label: 'Auto-approve threshold (0-10)', placeholder: '7.5' }
+      { key: 'auto_approve_threshold', label: 'Auto-approve threshold (0-10)', placeholder: '7.5' },
+      { key: 'audience_location', label: 'Target audience - location', placeholder: 'Tbilisi, Georgia' },
+      { key: 'audience_age', label: 'Target audience - age range', placeholder: '18-40' },
+      { key: 'audience_gender', label: 'Target audience - gender (all / women / men)', placeholder: 'all' },
+      { key: 'audience_notes', label: 'Audience notes', placeholder: 'e.g. students near the university, Gulf tourists in summer' }
     ];
     return (
       <div className="cp-card cp-form-card">
@@ -452,7 +456,7 @@ export function SettingsSection({ view }) {
             </div>
           </div>
         ))}
-        <p className="cp-muted">Saved values are stored in the database; agents read them on the next cycle.</p>
+        <p className="cp-muted">Saved values are stored in the database; the research and writing agents read them on the next cycle - audience settings steer every caption, script and trend search.</p>
       </div>
     );
   }

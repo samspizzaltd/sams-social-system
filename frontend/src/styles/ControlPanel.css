@@ -280,3 +280,21 @@
   .cp-card-row { flex-direction: column; }
   .cp-content { padding: 16px; }
 }
+
+/* ---------- media library ---------- */
+
+.cp-thumb {
+  width: 54px; height: 54px; object-fit: cover; border-radius: 8px;
+  border: 1px solid var(--cp-border);
+}
+.cp-media-pick { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.cp-media-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--cp-border); border-radius: 999px;
+  padding: 5px 12px; font-size: 12.5px; cursor: pointer; background: #fff;
+}
+.cp-media-chip.active { border-color: var(--cp-orange); background: #fdeee7; color: var(--cp-orange-dark); }
+.cp-media-chip input { display: none; }
+code { background: #f3efed; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+
+.cp-brand-logo { width: 44px; height: 44px; object-fit: contain; }

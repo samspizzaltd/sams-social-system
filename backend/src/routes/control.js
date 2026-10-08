@@ -104,9 +104,11 @@ router.delete('/revenue/:id', async (req, res) => {
 
 const SETTING_KEYS = [
   'brand_voice', 'posting_cadence', 'auto_approve_threshold',
+  'audience_location', 'audience_age', 'audience_gender', 'audience_notes',
   'platform_tiktok_enabled', 'platform_instagram_enabled',
   'platform_facebook_enabled', 'platform_youtube_enabled'
 ];
+const brandConfig = require('../services/brandConfig');
 
 router.get('/settings', async (req, res) => {
   const rows = await db.query('SELECT cfg_key, cfg_value, updated_at FROM branding');
@@ -129,6 +131,7 @@ router.put('/settings', async (req, res) => {
     [String(b.key).slice(0, 191), String(b.value).slice(0, 2000)]
   );
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  brandConfig.invalidate();
   res.json({ ok: true, key: b.key });
 });
 

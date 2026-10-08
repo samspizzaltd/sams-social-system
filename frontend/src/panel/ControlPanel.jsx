@@ -5,6 +5,7 @@ import {
   AnalyticsSection, GrowthSection, MonetizationSection,
   AgentsSection, SettingsSection
 } from './sections/growth';
+import { MediaLibrary, RenderQueue } from './sections/media';
 
 const MENU = [
   {
@@ -86,6 +87,8 @@ function ControlPanel({ user, onLogout }) {
       case 'analytics/platforms': return <AnalyticsSection />;
       case 'growth/gaps': return <GrowthSection view="gaps" key="gaps" />;
       case 'growth/schedule': return <GrowthSection view="schedule" key="schedule" />;
+      case 'media/library': return <MediaLibrary key="medialib" />;
+      case 'media/renders': return <RenderQueue key="renders" />;
       case 'money/ledger': return <MonetizationSection view="ledger" key="ledger" />;
       case 'money/record': return <MonetizationSection view="record" key="record" />;
       case 'money/opportunities': return <MonetizationSection view="opportunities" key="opps" />;
@@ -104,7 +107,7 @@ function ControlPanel({ user, onLogout }) {
     <div className="cp">
       <aside className="cp-sidebar">
         <div className="cp-brand">
-          <span className="cp-brand-icon">🍕</span>
+          <img src="/brand/sams-logo.png" alt="Sam's" className="cp-brand-logo" />
           <div>
             <div className="cp-brand-name">Sam&apos;s Social</div>
             <div className="cp-brand-sub">Control Panel</div>

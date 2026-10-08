@@ -1,4 +1,5 @@
 const claude = require('../services/claudeClient');
+const brandConfig = require('../services/brandConfig');
 
 const BUSINESS =
   "Sam's, a halal Middle Eastern fast-food restaurant in Tbilisi, Georgia. " +
@@ -15,7 +16,7 @@ class ContentCreationEngine {
   async generateCaption(topic, platform) {
     const target = platform || 'tiktok';
     const generated = await claude.generateJSON({
-      system: 'You write social captions for ' + BUSINESS + ' ' + VOICE,
+      system: 'You write social captions for ' + BUSINESS + ' ' + (await brandConfig.voiceLine()) + ' ' + (await brandConfig.audienceLine()),
       prompt:
         'Write one ' + target + ' caption about: ' + topic + '. ' +
         'Include a natural call to action and 3-5 hashtags that fit the Tbilisi food scene.',
@@ -37,7 +38,7 @@ class ContentCreationEngine {
   async generateVideoScript(topic, duration) {
     const seconds = duration || 30;
     const generated = await claude.generateJSON({
-      system: 'You are a short-form video director for ' + BUSINESS + ' ' + VOICE,
+      system: 'You are a short-form video director for ' + BUSINESS + ' ' + (await brandConfig.voiceLine()) + ' ' + (await brandConfig.audienceLine()),
       prompt:
         'Write a ' + seconds + '-second vertical video script about: ' + topic + '. ' +
         'It must be shootable on a phone inside a small restaurant. Each beat needs a ' +
@@ -79,7 +80,7 @@ class ContentCreationEngine {
 
   async generateCarouselPost(topic) {
     const generated = await claude.generateJSON({
-      system: 'You design Instagram carousels for ' + BUSINESS + ' ' + VOICE,
+      system: 'You design Instagram carousels for ' + BUSINESS + ' ' + (await brandConfig.voiceLine()) + ' ' + (await brandConfig.audienceLine()),
       prompt: 'Design a 5-slide Instagram carousel about: ' + topic,
       effort: 'medium',
       schema: {
@@ -115,7 +116,7 @@ class ContentCreationEngine {
   async generateProductDescription(productName, ingredients) {
     const list = (ingredients || []).join(', ');
     const generated = await claude.generateJSON({
-      system: 'You write menu copy for ' + BUSINESS + ' ' + VOICE,
+      system: 'You write menu copy for ' + BUSINESS + ' ' + (await brandConfig.voiceLine()),
       prompt:
         'Write a short, appetising description of ' + productName +
         (list ? ' made with ' + list : '') + '. Two sentences maximum.',

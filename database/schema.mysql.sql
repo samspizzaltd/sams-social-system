@@ -107,3 +107,32 @@ CREATE TABLE IF NOT EXISTS revenue (
   INDEX idx_revenue_platform (platform),
   INDEX idx_revenue_recorded (recorded_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS media (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  kind        VARCHAR(20) NOT NULL,
+  title       VARCHAR(255) NULL,
+  filename    VARCHAR(255) NULL,
+  url_path    VARCHAR(500) NULL,
+  local_path  VARCHAR(500) NULL,
+  size_bytes  BIGINT NULL,
+  content_id  INT NULL,
+  note        VARCHAR(500) NULL,
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_media_kind (kind),
+  INDEX idx_media_content (content_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS render_jobs (
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  content_id      INT NULL,
+  template        VARCHAR(50) NOT NULL,
+  params          LONGTEXT NULL,
+  media_ids       VARCHAR(500) NULL,
+  status          VARCHAR(20) DEFAULT 'queued',
+  error           TEXT NULL,
+  output_media_id INT NULL,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_render_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

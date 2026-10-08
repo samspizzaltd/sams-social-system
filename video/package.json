@@ -1,0 +1,17 @@
+{
+  "name": "sams-social-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion render pipeline for Sam's social system - runs on the owner's PC, not the server",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render",
+    "worker": "node render-worker.mjs"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.518",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.518"
+  }
+}

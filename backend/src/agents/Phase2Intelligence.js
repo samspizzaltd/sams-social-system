@@ -1,4 +1,5 @@
 const claude = require('../services/claudeClient');
+const brandConfig = require('../services/brandConfig');
 
 const BUSINESS =
   "Sam's, a halal Middle Eastern fast-food restaurant in Tbilisi, Georgia. " +
@@ -10,7 +11,7 @@ class ResearchEngine {
 
   async researchTrends() {
     const generated = await claude.generateJSON({
-      system: 'You are a social media strategist for ' + BUSINESS,
+      system: 'You are a social media strategist for ' + BUSINESS + ' ' + (await brandConfig.audienceLine()),
       prompt:
         'Identify social media trends worth acting on this week for this restaurant. ' +
         'Give hashtags actually used in the Georgian and halal food scene, realistic ' +
@@ -94,7 +95,7 @@ class ContentVault {
   async generateContentIdeas(topic, count) {
     const n = count || 3;
     const generated = await claude.generateJSON({
-      system: 'You are a short-form video producer for ' + BUSINESS,
+      system: 'You are a short-form video producer for ' + BUSINESS + ' ' + (await brandConfig.audienceLine()),
       prompt:
         'Propose ' + n + ' specific, filmable content ideas' +
         (topic ? ' about ' + topic : '') +
@@ -151,7 +152,7 @@ class CompetitorTracker {
 
   async identifyGaps() {
     const generated = await claude.generateJSON({
-      system: 'You are a competitive analyst for ' + BUSINESS,
+      system: 'You are a competitive analyst for ' + BUSINESS + ' ' + (await brandConfig.audienceLine()),
       prompt:
         'What content gaps and opportunities exist for a halal fast-food restaurant on ' +
         'social media in Tbilisi? Be specific and actionable.',
@@ -180,7 +181,7 @@ class TrendAnalyzer {
 
   async identifyTrends() {
     const generated = await claude.generateJSON({
-      system: 'You are a food trend analyst for ' + BUSINESS,
+      system: 'You are a food trend analyst for ' + BUSINESS + ' ' + (await brandConfig.audienceLine()),
       prompt:
         'Identify trends this restaurant could ride on TikTok and Instagram right now. ' +
         'Score potential 1-10 for a small local restaurant.',

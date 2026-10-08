@@ -31,7 +31,7 @@ function LoginPage({ onLogin }) {
   return (
     <div className="login-container">
       <div className="login-box">
-        <h1>🍕 Sam's Social Media</h1>
+        <img src="/brand/sams-logo-full.png" alt="Sam’s - More Than Pizza" className="login-logo" />
         <h2>Admin Dashboard</h2>
 
         <form onSubmit={handleSubmit}>

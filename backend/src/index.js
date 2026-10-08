@@ -9,6 +9,8 @@ const SystemOrchestrator = require('./agents/SystemOrchestrator');
 const db = require('./database/db');
 const cycleRepository = require('./database/cycleRepository');
 const claude = require('./services/claudeClient');
+const mediaRoutes = require('./routes/media');
+const brandConfig = require('./services/brandConfig');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -19,8 +21,15 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ||
 app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json());
 app.use('/auth', authRoutes);
+// Uploaded media is public-read (it is destined for social media anyway);
+// uploading/deleting requires a JWT via the /api routes below.
+app.use('/media', express.static(mediaRoutes.MEDIA_DIR, {
+  maxAge: '7d',
+  setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff')
+}));
 app.use('/api', verifyToken);
 app.use('/api', controlRoutes);
+app.use('/api', mediaRoutes.router);
 
 // Full system diagnostics (JWT-protected; public /health is deliberately slim)
 app.get('/api/system', (req, res) => {

@@ -89,3 +89,5 @@ button[type="submit"]:disabled {
   color: var(--text-light);
   font-size: 12px;
 }
+
+.login-logo { width: 240px; max-width: 80%; display: block; margin: 0 auto 10px; }
