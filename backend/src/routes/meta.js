@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const db = require('../database/db');
 
 // Meta (Instagram + Facebook) OAuth and token storage.
@@ -120,6 +122,61 @@ router.get('/auth/meta/callback', async (req, res) => {
     );
   } catch (err) {
     fail(err.message);
+  }
+});
+
+
+// ---------- One-time secret setup (owner-only web form) ----------
+// The owner repeatedly hit copy/paste failures moving the app secret through
+// the terminal and File Manager. This form takes the secret over HTTPS,
+// validates its shape, rewrites .env AND updates the running process - no
+// restart needed. Guarded by the owner panel password.
+
+const ENV_PATH = path.join(__dirname, '..', '..', '..', '.env');
+
+function setupPage(msg, ok) {
+  return '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<body style="font-family:sans-serif;max-width:430px;margin:40px auto;padding:0 16px">' +
+    '<h2>Meta App Secret setup</h2>' +
+    (msg ? '<p style="padding:10px;border-radius:8px;background:' + (ok ? '#e3f2e9' : '#fde4e4') + '">' + msg + '</p>' : '') +
+    '<form method="POST" action="/auth/meta/secret-setup">' +
+    '<p><label>Panel password<br><input type="password" name="password" style="width:100%;padding:8px" required></label></p>' +
+    '<p><label>App secret (32 characters, from App settings &rarr; Basic &rarr; Show)<br>' +
+    '<input type="password" name="secret" style="width:100%;padding:8px" minlength="32" maxlength="32" required></label></p>' +
+    '<button style="padding:10px 18px;background:#F15C22;color:#fff;border:none;border-radius:8px">Save secret</button>' +
+    '</form></body>';
+}
+
+router.get('/auth/meta/secret-setup', (req, res) => {
+  res.send(setupPage(null, false));
+});
+
+router.post('/auth/meta/secret-setup', express.urlencoded({ extended: false }), (req, res) => {
+  const b = req.body || {};
+  if (!process.env.OWNER_PASSWORD || b.password !== process.env.OWNER_PASSWORD) {
+    return res.status(401).send(setupPage('Wrong panel password.', false));
+  }
+  const secret = String(b.secret || '').trim();
+  if (!/^[a-f0-9]{32}$/.test(secret)) {
+    return res.status(400).send(setupPage(
+      'That does not look like a Meta app secret: it must be exactly 32 characters, only digits and lowercase a-f. ' +
+      'What arrived was ' + secret.length + ' characters. In the Meta dashboard click Show first, then select all and copy.',
+      false));
+  }
+  try {
+    let env = fs.readFileSync(ENV_PATH, 'utf8');
+    if (/^META_APP_SECRET=.*$/m.test(env)) {
+      env = env.replace(/^META_APP_SECRET=.*$/m, 'META_APP_SECRET=' + secret);
+    } else {
+      env = env.trimEnd() + String.fromCharCode(10) + 'META_APP_SECRET=' + secret + String.fromCharCode(10);
+    }
+    fs.writeFileSync(ENV_PATH, env);
+    process.env.META_APP_SECRET = secret; // effective immediately, no restart
+    res.send(setupPage(
+      'Saved and active. Now <a href="/auth/meta/start">authorize the app</a>.',
+      true));
+  } catch (err) {
+    res.status(500).send(setupPage('Could not write .env: ' + err.message, false));
   }
 });
 
