@@ -123,6 +123,34 @@ router.get('/auth/meta/callback', async (req, res) => {
   }
 });
 
+// JWT-protected credential self-check: validates the configured app id/secret
+// directly with Facebook using the app-token grant. Never returns the secret -
+// only its shape and whether Facebook accepts it.
+router.get('/meta/diag', async (req, res) => {
+  const cfg = appConfig();
+  const secret = cfg.secret || '';
+  const shape = {
+    appIdPresent: Boolean(cfg.id),
+    secretPresent: Boolean(secret),
+    secretLength: secret.length,
+    secretIsPureHex: /^[a-f0-9]+$/.test(secret),
+    secretHasWhitespaceOrQuotes: /[\s"']/.test(secret),
+    secretHasNonAscii: [...secret].some(c => c.charCodeAt(0) > 126)
+  };
+  let facebook = null;
+  if (cfg.id && secret) {
+    try {
+      const r = await fetch(GRAPH + '/oauth/access_token?client_id=' + cfg.id +
+        '&client_secret=' + encodeURIComponent(secret) + '&grant_type=client_credentials');
+      const j = await r.json();
+      facebook = j.access_token ? { ok: true } : { ok: false, error: j.error && j.error.message };
+    } catch (err) {
+      facebook = { ok: false, error: err.message };
+    }
+  }
+  res.json({ shape, facebook });
+});
+
 // JWT-protected status for the panel (mounted under /api by index.js).
 router.get('/meta/status', async (req, res) => {
   const rows = await db.query(
