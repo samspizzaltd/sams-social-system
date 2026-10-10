@@ -100,9 +100,14 @@ router.get('/auth/meta/callback', async (req, res) => {
     const page = pages.find(p => p.instagram_business_account) || pages[0];
     const ig = page.instagram_business_account || null;
 
-    await saveAccount('meta_user', 'owner', userToken, expiresAt);
-    await saveAccount('facebook_page', page.id, page.access_token, null); // Page tokens from long-lived user tokens do not expire
-    if (ig) await saveAccount('instagram', ig.id, page.access_token, null);
+    const saved = [
+      await saveAccount('meta_user', 'owner', userToken, expiresAt),
+      await saveAccount('facebook_page', page.id, page.access_token, null), // Page tokens from long-lived user tokens do not expire
+      ig ? await saveAccount('instagram', ig.id, page.access_token, null) : true
+    ];
+    if (saved.includes(false)) {
+      return fail('Tokens were obtained but could NOT be stored (database write failed) - nothing was saved. Check /api/system and retry.');
+    }
 
     res.send(
       '<h2 style="font-family:sans-serif">Meta connected</h2>' +
