@@ -18,7 +18,7 @@ const SCOPES = [
   'pages_show_list',
   'pages_read_engagement',
   'pages_manage_posts',
-  'publish_video',
+  'pages_manage_engagement',
   'instagram_manage_insights',
   'business_management'
 ].join(',');
