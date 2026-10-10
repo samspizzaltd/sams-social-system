@@ -10,6 +10,7 @@ const db = require('./database/db');
 const cycleRepository = require('./database/cycleRepository');
 const claude = require('./services/claudeClient');
 const mediaRoutes = require('./routes/media');
+const metaRoutes = require('./routes/meta');
 const brandConfig = require('./services/brandConfig');
 
 const app = express();
@@ -23,6 +24,7 @@ app.use(express.json());
 app.use('/auth', authRoutes);
 // Uploaded media is public-read (it is destined for social media anyway);
 // uploading/deleting requires a JWT via the /api routes below.
+app.use('/', metaRoutes); // /auth/meta/start + /auth/meta/callback (public by design)
 app.use('/media', express.static(mediaRoutes.MEDIA_DIR, {
   maxAge: '7d',
   setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -30,6 +32,7 @@ app.use('/media', express.static(mediaRoutes.MEDIA_DIR, {
 app.use('/api', verifyToken);
 app.use('/api', controlRoutes);
 app.use('/api', mediaRoutes.router);
+app.use('/api', metaRoutes); // adds JWT-protected /api/meta/status
 
 // Full system diagnostics (JWT-protected; public /health is deliberately slim)
 app.get('/api/system', (req, res) => {
