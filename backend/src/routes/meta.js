@@ -208,6 +208,68 @@ router.get('/meta/diag', async (req, res) => {
   res.json({ shape, facebook });
 });
 
+
+// ---------- Reel publishing (two-step because the proxy cuts at 60s) ----------
+
+async function igAccount() {
+  const rows = await db.query("SELECT business_account_id, access_token FROM accounts WHERE platform = 'instagram' AND status = 'active' LIMIT 1");
+  return rows && rows.length ? rows[0] : null;
+}
+
+// Step 1: create the media container. Instagram downloads the video from
+// video_url (must be a public HTTPS URL, e.g. our own /media files).
+router.post('/meta/reel/start', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.video_url || !/^https:\/\//.test(b.video_url)) {
+      return res.status(400).json({ error: 'video_url must be a public https URL' });
+    }
+    const ig = await igAccount();
+    if (!ig) return res.status(503).json({ error: 'Instagram not connected - run /auth/meta/start first' });
+
+    const params = new URLSearchParams({
+      media_type: 'REELS',
+      video_url: b.video_url,
+      caption: String(b.caption || '').slice(0, 2200),
+      access_token: ig.access_token
+    });
+    const r = await fetch(GRAPH + '/' + ig.business_account_id + '/media', { method: 'POST', body: params });
+    const j = await r.json();
+    if (!j.id) return res.status(502).json({ error: 'Container creation failed', detail: j.error && j.error.message });
+    res.json({ creation_id: j.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 2: poll until Instagram finished processing, then publish.
+router.post('/meta/reel/finish', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.creation_id) return res.status(400).json({ error: 'creation_id required' });
+    const ig = await igAccount();
+    if (!ig) return res.status(503).json({ error: 'Instagram not connected' });
+
+    const st = await fetch(GRAPH + '/' + b.creation_id + '?fields=status_code,status&access_token=' + encodeURIComponent(ig.access_token));
+    const sj = await st.json();
+    if (sj.error) return res.status(502).json({ error: sj.error.message });
+    if (sj.status_code !== 'FINISHED') {
+      return res.json({ published: false, status_code: sj.status_code, status: sj.status });
+    }
+
+    const params = new URLSearchParams({ creation_id: b.creation_id, access_token: ig.access_token });
+    const r = await fetch(GRAPH + '/' + ig.business_account_id + '/media_publish', { method: 'POST', body: params });
+    const j = await r.json();
+    if (!j.id) return res.status(502).json({ error: 'Publish failed', detail: j.error && j.error.message });
+
+    const perma = await fetch(GRAPH + '/' + j.id + '?fields=permalink&access_token=' + encodeURIComponent(ig.access_token));
+    const pj = await perma.json();
+    res.json({ published: true, media_id: j.id, permalink: pj.permalink || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // JWT-protected status for the panel (mounted under /api by index.js).
 router.get('/meta/status', async (req, res) => {
   const rows = await db.query(
