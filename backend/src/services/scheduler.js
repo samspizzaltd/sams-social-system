@@ -21,6 +21,7 @@ const tiktokPublish = require('./tiktokPublish');
 const TBILISI_OFFSET_MS = 4 * 3600 * 1000; // Georgia has no DST
 const PUBLIC_ORIGIN = process.env.PUBLIC_API_ORIGIN || 'https://api.sams-social-system.sams.ge';
 const MAX_POLL_ATTEMPTS = 40;
+const TIKTOK_MAX_POLL_ATTEMPTS = 90; // TikTok moderation of a 60 MB video can be slow
 const STALE_PUBLISHING_MS = 10 * 60 * 1000;
 
 function tbilisiNow() {
@@ -58,10 +59,22 @@ async function readLastFire() {
 // value wins. A concurrent second process (deploy overlap) updates 0 rows and
 // skips, so one slot can never run the cycle twice.
 async function claimFireKey(fireKey) {
-  const r = await db.query(
+  let r = await db.query(
     "UPDATE branding SET cfg_value = ? WHERE cfg_key = 'auto_cycle_last_fire' AND cfg_value <> ?",
     [fireKey, fireKey]
   );
+  if (r && r.affectedRows === 0) {
+    // Row may simply not exist yet (boot-time seed failed on a DB blip):
+    // seed lazily and try once more, so cycles are never disabled forever.
+    const probe = await db.query("SELECT 1 FROM branding WHERE cfg_key = 'auto_cycle_last_fire'");
+    if (probe && probe.length === 0) {
+      await seedLastFire();
+      r = await db.query(
+        "UPDATE branding SET cfg_value = ? WHERE cfg_key = 'auto_cycle_last_fire' AND cfg_value <> ?",
+        [fireKey, fireKey]
+      );
+    }
+  }
   return !!(r && r.affectedRows === 1);
 }
 
@@ -133,7 +146,11 @@ async function processClaimedRow(row) {
     const start = row.platform === 'instagram'
       ? await metaPublish.igCreateContainer(videoUrl, row.caption)
       : row.platform === 'tiktok'
-        ? await tiktokPublish.startPost(row.filename, row.caption, postOptions)
+        ? await tiktokPublish.startPost(row.filename, row.caption, postOptions,
+            // Persist the publish id BEFORE any byte uploads: once bytes
+            // land, TikTok publishes on its own, so the row must already
+            // read as committed territory for the sweeper.
+            (publishId) => bumpClaimed(row.id, 'creation_id = ?', [publishId]))
         : await metaPublish.pageStartReel(videoUrl);
     if (start.maybePublished) {
       // The platform may have registered the post request - never retry blind.
@@ -143,6 +160,10 @@ async function processClaimedRow(row) {
     if (!start.ok) {
       await bumpClaimed(row.id, "status = 'failed', error = ?, attempts = attempts + 1", [start.error]);
       return;
+    }
+    if (start.uploadWarning) {
+      console.warn('[scheduler] row #' + row.id + ' ' + start.uploadWarning);
+      await bumpClaimed(row.id, 'error = ?', ['upload warning: ' + start.uploadWarning]);
     }
     const saved = await bumpClaimed(row.id, 'creation_id = ?, attempts = attempts + 1', [start.creationId]);
     if (saved) {
@@ -160,6 +181,7 @@ async function processClaimedRow(row) {
       ? await tiktokPublish.tryFinish(row.creation_id)
       : await metaPublish.pageTryPublish(row.creation_id, row.caption);
 
+  const pollCap = row.platform === 'tiktok' ? TIKTOK_MAX_POLL_ATTEMPTS : MAX_POLL_ATTEMPTS;
   if (!result.ok) {
     if (result.maybePublished) {
       // The publish request went out but its outcome is unknown. Marking this
@@ -168,12 +190,30 @@ async function processClaimedRow(row) {
       console.error('[scheduler] row #' + row.id + ' publish outcome UNKNOWN (' + result.error + ') - leaving for the sweeper');
       return;
     }
+    if (row.platform === 'tiktok' && !result.definitive) {
+      // The upload is already committed (TikTok publishes it on its own), so
+      // a transient poll problem must NEVER become a retryable 'failed' -
+      // that invites a re-approve and a double post. Keep polling instead.
+      if (row.attempts >= pollCap) {
+        await bumpClaimed(row.id, "status = 'unknown', error = 'status unreadable after a committed upload - CHECK THE ACCOUNT before doing anything with this row', attempts = attempts + 1", []);
+      } else {
+        const saved = await bumpClaimed(row.id, 'attempts = attempts + 1, error = ?', ['transient: ' + result.error]);
+        if (saved) await bumpClaimed(row.id, "status = 'approved_publishing'", []);
+      }
+      return;
+    }
     await bumpClaimed(row.id, "status = 'failed', error = ?, attempts = attempts + 1", [result.error]);
     return;
   }
   if (!result.done) {
-    if (row.attempts >= MAX_POLL_ATTEMPTS) {
-      await bumpClaimed(row.id, "status = 'failed', error = 'timed out waiting for processing', attempts = attempts + 1", []);
+    if (row.attempts >= pollCap) {
+      if (row.platform === 'tiktok') {
+        // Committed upload still processing - parking as retryable would
+        // invite a double post. The owner checks the account first.
+        await bumpClaimed(row.id, "status = 'unknown', error = 'still processing after ~30 min - CHECK THE ACCOUNT before doing anything with this row', attempts = attempts + 1", []);
+      } else {
+        await bumpClaimed(row.id, "status = 'failed', error = 'timed out waiting for processing', attempts = attempts + 1", []);
+      }
     } else {
       const saved = await bumpClaimed(row.id, 'attempts = attempts + 1', []);
       if (saved) await bumpClaimed(row.id, "status = 'approved_publishing'", []);

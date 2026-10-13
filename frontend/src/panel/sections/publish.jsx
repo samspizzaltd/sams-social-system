@@ -39,6 +39,7 @@ export function PublishQueue() {
     api.get('/api/publish-queue')
       .then((r) => {
         if (!aliveRef.current) return; // response landed after unmount
+        setError(null); // a stale failure banner must clear once polling recovers
         setQueue(r.data.queue);
         // Keep polling while anything is mid-publish.
         const active = r.data.queue.some((q) => q.status === 'approved_publishing' || q.status === 'publishing');
@@ -67,8 +68,10 @@ export function PublishQueue() {
 
   const CAPTION_LIMIT = { instagram: 2200, facebook_page: 5000, tiktok: 2200 };
 
+  const [staging, setStaging] = useState(false);
   const stage = async (e) => {
     e.preventDefault();
+    if (staging) return; // double-click must not stage duplicate rows
     setError(null); setNotice(null);
     const platforms = [form.instagram && 'instagram', form.facebook_page && 'facebook_page', form.tiktok && 'tiktok'].filter(Boolean);
     if (!platforms.length) { setError('Pick at least one platform'); return; }
@@ -79,6 +82,7 @@ export function PublishQueue() {
       setError('Caption is ' + form.caption.length + ' characters - too long for ' + tooLong + ' (max ' + CAPTION_LIMIT[tooLong] + '). Shorten it or untick that platform.');
       return;
     }
+    setStaging(true);
     const staged = [];
     let failedPlatform = null;
     let failure = null;
@@ -105,6 +109,7 @@ export function PublishQueue() {
       setNotice('Staged for review. Nothing publishes until you approve it below.');
       setForm((f) => ({ ...f, caption: '', instagram: true }));
     }
+    setStaging(false);
     load();
   };
 
@@ -155,7 +160,12 @@ export function PublishQueue() {
           load(); // staged rows just landed in the queue below
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!aliveRef.current) return;
+        // One failed poll must not freeze the card mid-harvest.
+        clearTimeout(harvestPollRef.current);
+        harvestPollRef.current = setTimeout(pollHarvest, 30000);
+      });
   }, [load]);
 
   useEffect(() => {
@@ -244,7 +254,7 @@ export function PublishQueue() {
               placeholder="Exactly what will appear under the post"
             />
           </label>
-          <button className="cp-btn" type="submit">Stage for review</button>
+          <button className="cp-btn" type="submit" disabled={staging}>{staging ? 'Staging…' : 'Stage for review'}</button>
         </form>
       </div>
 

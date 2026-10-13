@@ -94,14 +94,24 @@ async function migrate() {
     .map(s => s.trim())
     .filter(Boolean);
 
+  let connFailure = false;
   for (const stmt of statements) {
     try {
       await state.pool.query(stmt);
     } catch (err) {
+      if (err.code === 'ECONNREFUSED' || err.code === 'PROTOCOL_CONNECTION_LOST' || err.code === 'ETIMEDOUT' || err.fatal) {
+        connFailure = true; // the REST of the schema never got a chance
+      }
       console.warn('[db] migration statement failed: ' + err.message);
     }
   }
 
+  // Only latch migrated when every statement actually reached the server -
+  // otherwise the recovery path must re-run the schema.
+  if (connFailure) {
+    console.warn('[db] migration interrupted by a connection failure - will re-run on recovery');
+    return false;
+  }
   state.migrated = true;
   console.log('[db] schema applied (' + statements.length + ' statements)');
   return true;

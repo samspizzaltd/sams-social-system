@@ -90,6 +90,22 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
 
 // POST /api/publish-queue/:id/drop
 router.post('/publish-queue/:id/drop', async (req, res) => {
+  // A TikTok row whose upload already went out CANNOT be stopped - TikTok
+  // publishes it on its own. Pretending it was dropped would hide a post
+  // that still appears on the account, so such rows park as 'unknown'.
+  const info = await db.query('SELECT platform, status, creation_id FROM publish_queue WHERE id = ?', [req.params.id]);
+  if (info === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (!info.length) return res.status(404).json({ error: 'Not found' });
+  const r0 = info[0];
+  if (r0.platform === 'tiktok' && r0.creation_id && r0.status === 'approved_publishing') {
+    const parked = await db.query(
+      "UPDATE publish_queue SET status = 'unknown', error = 'drop requested AFTER the upload was committed - TikTok may still publish this video; CHECK THE ACCOUNT' WHERE id = ? AND status = 'approved_publishing'",
+      [req.params.id]
+    );
+    if (parked === null) return res.status(503).json({ error: 'Database unavailable' });
+    if (!parked.affectedRows) return res.status(409).json({ error: 'Row changed state - reload and look again' });
+    return res.json({ ok: true, status: 'unknown', note: 'Too late to stop this one: the video was already uploaded to TikTok and may still publish. Check the account.' });
+  }
   const rows = await db.query(
     "UPDATE publish_queue SET status = 'dropped' WHERE id = ? AND status IN ('pending_review','failed','approved_publishing','unknown')",
     [req.params.id]

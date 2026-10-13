@@ -39,19 +39,38 @@ function appCfg() {
   };
 }
 
-function sign(payload) {
-  return crypto.createHmac('sha256', process.env.JWT_SECRET || 'no-secret')
-    .update('tiktok-oauth:' + payload).digest('hex').slice(0, 32);
+// Fail CLOSED: without JWT_SECRET nothing on this public surface validates.
+function sign(domain, payload) {
+  if (!process.env.JWT_SECRET) return null;
+  return crypto.createHmac('sha256', process.env.JWT_SECRET)
+    .update('tiktok-' + domain + ':' + payload).digest('hex').slice(0, 32);
 }
-function makeTicket() {
-  const ts = Date.now().toString(36);
-  return ts + '.' + sign(ts);
+// Each minted value is single-use (an authorize URL leaks into browser
+// history; replaying it must be worthless).
+const usedTokens = new Map(); // value -> expiry ms
+function sweepUsed() {
+  const now = Date.now();
+  if (usedTokens.size > 500) {
+    for (const [k, v] of usedTokens) if (v < now) usedTokens.delete(k);
+  }
 }
-function checkTicket(t) {
-  const [ts, sig] = String(t || '').split('.');
-  if (!ts || !sig || sig !== sign(ts)) return false;
-  const age = Date.now() - parseInt(ts, 36);
-  return age >= 0 && age < 15 * 60 * 1000;
+function makeToken(domain) {
+  const ts = Date.now().toString(36) + '-' + crypto.randomBytes(6).toString('hex');
+  const sig = sign(domain, ts);
+  return sig ? ts + '.' + sig : null;
+}
+function consumeToken(domain, t) {
+  const str = String(t || '');
+  const [ts, sig] = str.split('.');
+  if (!ts || !sig) return false;
+  const expect = sign(domain, ts);
+  if (!expect || sig !== expect) return false;
+  const age = Date.now() - parseInt(ts.split('-')[0], 36);
+  if (!(age >= 0 && age < 15 * 60 * 1000)) return false;
+  if (usedTokens.has(domain + ':' + str)) return false; // single use
+  usedTokens.set(domain + ':' + str, Date.now() + 16 * 60 * 1000);
+  sweepUsed();
+  return true;
 }
 
 // ---------- JWT side ----------
@@ -65,12 +84,14 @@ apiRouter.get('/tiktok/connect-url', (req, res) => {
       error: 'TikTok app credentials not set - open /auth/tiktok/secret-setup first (use the SANDBOX client key and secret while testing)'
     });
   }
-  res.json({ url: cfg.redirect.replace('/auth/tiktok/callback', '') + '/auth/tiktok/start?ticket=' + makeTicket() });
+  const ticket = makeToken('ticket');
+  if (!ticket) return res.status(503).json({ error: 'JWT_SECRET not configured on the server' });
+  res.json({ url: cfg.redirect.replace('/auth/tiktok/callback', '') + '/auth/tiktok/start?ticket=' + ticket });
 });
 
 apiRouter.get('/tiktok/status', async (req, res) => {
   const rows = await db.query(
-    "SELECT business_account_id, expires_at, status, updated_at FROM accounts WHERE platform = 'tiktok' ORDER BY id DESC LIMIT 1"
+    "SELECT business_account_id, expires_at, status, updated_at FROM accounts WHERE platform = 'tiktok' ORDER BY (status = 'active') DESC, id DESC LIMIT 1"
   );
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!rows.length) return res.json({ connected: false });
@@ -79,7 +100,7 @@ apiRouter.get('/tiktok/status', async (req, res) => {
   const live = await tiktokPublish.account(); // refreshes if close to expiry
   if (live) {
     try {
-      const r = await fetch(API + '/user/info/?fields=open_id,display_name,avatar_url,username', {
+      const r = await fetch(API + '/user/info/?fields=open_id,display_name,avatar_url', {
         headers: { Authorization: 'Bearer ' + live.access_token },
         signal: AbortSignal.timeout(15 * 1000)
       });
@@ -117,15 +138,17 @@ apiRouter.post('/tiktok/disconnect', async (req, res) => {
 publicRouter.get('/auth/tiktok/start', (req, res) => {
   const cfg = appCfg();
   if (!cfg.key) return res.status(503).send('TIKTOK_CLIENT_KEY not configured');
-  if (!checkTicket(req.query.ticket)) {
-    return res.status(403).send('This link must be opened from the panel (Settings - Platform Connections) and is valid for 15 minutes.');
+  if (!consumeToken('ticket', req.query.ticket)) {
+    return res.status(403).send('This link must be opened fresh from the panel (Settings - Platform Connections); each link works once, within 15 minutes.');
   }
+  const state = makeToken('state');
+  if (!state) return res.status(503).send('Server not configured');
   const url = 'https://www.tiktok.com/v2/auth/authorize/' +
     '?client_key=' + encodeURIComponent(cfg.key) +
     '&scope=' + encodeURIComponent(SCOPES) +
     '&response_type=code' +
     '&redirect_uri=' + encodeURIComponent(cfg.redirect) +
-    '&state=' + encodeURIComponent(makeTicket());
+    '&state=' + encodeURIComponent(state);
   res.redirect(url);
 });
 
@@ -135,7 +158,7 @@ publicRouter.get('/auth/tiktok/callback', async (req, res) => {
     '<h2>TikTok connection failed</h2><p>' + esc(msg) + '</p><p>Go back to the panel and press Connect TikTok again.</p>'
   );
   try {
-    if (!checkTicket(req.query.state)) return fail('Missing or expired state - start again from the panel');
+    if (!consumeToken('state', req.query.state)) return fail('Missing, expired or already-used state - start again from the panel');
     if (req.query.error) return fail('TikTok returned: ' + (req.query.error_description || req.query.error));
     if (!req.query.code) return fail('No authorization code received');
     if (!cfg.key || !cfg.secret) return fail('TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET not configured');
@@ -154,17 +177,24 @@ publicRouter.get('/auth/tiktok/callback', async (req, res) => {
     });
     const j = await r.json();
     if (!j.access_token || !j.open_id) {
-      return fail('Token exchange failed: ' + JSON.stringify(j.error_description || j.error || j).slice(0, 300));
+      // Never echo the raw body - it can contain live tokens.
+      const safe = j.error_description || j.error || 'unexpected response shape (details in the server log)';
+      console.warn('[tiktok] token exchange failed: ' + JSON.stringify({ ...j, access_token: undefined, refresh_token: undefined }).slice(0, 300));
+      return fail('Token exchange failed: ' + String(safe).slice(0, 200));
     }
 
     // First connect wins: a different account may not silently replace the
     // bound one. The owner disconnects first (panel button), then reconnects.
     const existing = await db.query(
-      "SELECT business_account_id, status FROM accounts WHERE platform = 'tiktok' ORDER BY id DESC LIMIT 1"
+      "SELECT business_account_id, status FROM accounts WHERE platform = 'tiktok'"
     );
     if (existing === null) return fail('Database unavailable - nothing was saved. Try again in a minute.');
-    if (existing.length && existing[0].status === 'active' && existing[0].business_account_id !== j.open_id) {
-      return fail('A different TikTok account is already connected. Disconnect it in the panel first if you really mean to switch accounts.');
+    // Only an EXPLICIT owner disconnect releases the binding - an auto-expired
+    // row must still refuse a different account (that is the exact mistake
+    // this pinning exists to catch).
+    const conflict = existing.find((r) => r.business_account_id !== String(j.open_id) && r.status !== 'disconnected');
+    if (conflict) {
+      return fail('A different TikTok account is already bound (status: ' + conflict.status + '). Disconnect it in the panel first if you really mean to switch accounts.');
     }
 
     const expiresAt = new Date(Date.now() + (j.expires_in || 86400) * 1000);
@@ -178,14 +208,13 @@ publicRouter.get('/auth/tiktok/callback', async (req, res) => {
     // Show who got connected, so a wrong-account connect is caught on sight.
     let who = '';
     try {
-      const ur = await fetch(API + '/user/info/?fields=open_id,display_name,username', {
+      const ur = await fetch(API + '/user/info/?fields=open_id,display_name', {
         headers: { Authorization: 'Bearer ' + j.access_token },
         signal: AbortSignal.timeout(15 * 1000)
       });
       const uj = await ur.json();
       if (uj.data && uj.data.user) {
-        who = '<li>Account: ' + esc(uj.data.user.display_name || '') +
-          (uj.data.user.username ? ' (@' + esc(uj.data.user.username) + ')' : '') + '</li>';
+        who = '<li>Account: ' + esc(uj.data.user.display_name || '') + '</li>';
       }
     } catch { /* cosmetic */ }
 
@@ -257,10 +286,13 @@ publicRouter.post('/auth/tiktok/secret-setup', express.urlencoded({ extended: fa
     let env = fs.readFileSync(ENV_PATH, 'utf8');
     for (const [name, val] of [['TIKTOK_CLIENT_KEY', key], ['TIKTOK_CLIENT_SECRET', secret]]) {
       const re = new RegExp('^' + name + '=.*$', 'm');
-      if (re.test(env)) env = env.replace(re, name + '=' + val);
+      // Replacer FUNCTION: a '$' in the secret must never trigger $-substitution.
+      if (re.test(env)) env = env.replace(re, () => name + '=' + val);
       else env = env.trimEnd() + String.fromCharCode(10) + name + '=' + val + String.fromCharCode(10);
     }
-    fs.writeFileSync(ENV_PATH, env);
+    // Atomic: a crash mid-write must never truncate the live .env.
+    fs.writeFileSync(ENV_PATH + '.tmp', env);
+    fs.renameSync(ENV_PATH + '.tmp', ENV_PATH);
     process.env.TIKTOK_CLIENT_KEY = key;       // effective immediately
     process.env.TIKTOK_CLIENT_SECRET = secret; // no restart needed
     res.send(setupPage('Saved and active. Now go to the panel and press Connect TikTok.', true));

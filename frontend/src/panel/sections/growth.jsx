@@ -3,7 +3,11 @@ import api from '../api';
 import { Stat, ErrorBox, Loading } from './core';
 
 const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n);
-const fmtDate = (d) => (d ? new Date(d).toLocaleString() : '—');
+const fmtDate = (d) => {
+  if (!d) return '—';
+  const t = new Date(String(d).replace(' ', 'T'));
+  return Number.isNaN(t.getTime()) ? String(d) : t.toLocaleString();
+};
 
 // Live platform-connection status + the TikTok connect/disconnect controls.
 // Publishing on every platform still goes through the owner-approved queue.
@@ -14,17 +18,24 @@ function ConnectionsView() {
   const [notice, setNotice] = useState(null);
 
   const load = useCallback(() => {
-    api.get('/api/meta/status').then((r) => setMeta(r.data)).catch(() => setMeta({ error: true }));
-    api.get('/api/tiktok/status').then((r) => setTiktok(r.data)).catch(() => setTiktok({ error: true }));
+    api.get('/api/meta/status').then((r) => setMeta(r.data)).catch(() => setMeta({ unavailable: true }));
+    api.get('/api/tiktok/status').then((r) => setTiktok(r.data)).catch(() => setTiktok({ unavailable: true }));
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  const [connectUrl, setConnectUrl] = useState(null);
   const connectTikTok = async () => {
     setError(null); setNotice(null);
     try {
       const r = await api.get('/api/tiktok/connect-url');
-      window.open(r.data.url, '_blank', 'noopener');
-      setNotice('A TikTok window opened - log in with the SAM’S TikTok account there, then come back and press Refresh.');
+      // Popup blockers eat window.open after an await (Safari always) - try,
+      // but always render a real link as the reliable path. Each link works
+      // once, so fetch a fresh one per click.
+      const w = window.open(r.data.url, '_blank');
+      setConnectUrl(r.data.url);
+      setNotice(w
+        ? 'A TikTok window opened - log in with the SAM’S TikTok account there, then come back and press Refresh.'
+        : 'Your browser blocked the popup - use the "Open TikTok login" link below instead.');
     } catch (e) {
       setError(e.response?.data?.error || e.message);
     }
@@ -50,12 +61,15 @@ function ConnectionsView() {
       <h3>Platform connections</h3>
       <ErrorBox error={error} />
       {notice && <div className="cp-success">{notice}</div>}
+      {(meta && meta.unavailable) || (tiktok && tiktok.unavailable) ? (
+        <p className="cp-muted">Connection status is unavailable right now (server or database hiccup) - this does NOT mean the accounts are disconnected. Press Refresh in a minute before reconnecting anything.</p>
+      ) : null}
       <table className="cp-table">
         <thead><tr><th>Platform</th><th>Status</th><th>Details</th><th></th></tr></thead>
         <tbody>
           <tr>
             <td>Instagram + Facebook</td>
-            <td>{meta === null ? '…' : pill(metaConnected, metaConnected ? 'connected' : 'not connected')}</td>
+            <td>{meta === null ? '…' : meta.unavailable ? <span className="cp-pill warn">status unavailable</span> : pill(metaConnected, metaConnected ? 'connected' : 'not connected')}</td>
             <td className="cp-muted">
               {metaAccounts.filter((a) => a.platform !== 'meta_user').map((a) => a.platform + ' (' + a.business_account_id + ')').join(' · ') || '—'}
             </td>
@@ -63,7 +77,7 @@ function ConnectionsView() {
           </tr>
           <tr>
             <td>TikTok</td>
-            <td>{tiktok === null ? '…' : pill(!!tiktok.connected, tiktok.connected ? 'connected' : (tiktok.status === 'disconnected' ? 'disconnected' : 'not connected'))}</td>
+            <td>{tiktok === null ? '…' : tiktok.unavailable ? <span className="cp-pill warn">status unavailable</span> : pill(!!tiktok.connected, tiktok.connected ? 'connected' : (tiktok.status === 'disconnected' ? 'disconnected' : 'not connected'))}</td>
             <td className="cp-muted">
               {tiktok && tiktok.profile
                 ? (tiktok.profile.display_name || '') + (tiktok.profile.username ? ' (@' + tiktok.profile.username + ')' : '')
@@ -72,7 +86,10 @@ function ConnectionsView() {
             <td>
               {tiktok && tiktok.connected
                 ? <button className="cp-btn small ghost" onClick={disconnectTikTok}>Disconnect</button>
-                : <button className="cp-btn small" onClick={connectTikTok}>Connect TikTok</button>}
+                : <button className="cp-btn small" disabled={!!(tiktok && tiktok.unavailable)} onClick={connectTikTok}>Connect TikTok</button>}
+              {connectUrl && !(tiktok && tiktok.connected) && (
+                <div><a href={connectUrl} target="_blank" rel="noopener noreferrer" onClick={() => setConnectUrl(null)}>Open TikTok login</a></div>
+              )}
             </td>
           </tr>
           <tr>

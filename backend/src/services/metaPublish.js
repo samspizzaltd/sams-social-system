@@ -144,6 +144,11 @@ async function pageTryPublish(videoId, caption) {
     return { ok: false, maybePublished: true, error: 'publish outcome unknown: ' + err.message };
   }
   if (fj.error) return { ok: false, error: fj.error.message };
+  if (fj.success !== true) {
+    // No error AND no success: unrecognizable finish response - the reel may
+    // or may not have been published. Never record a success we cannot see.
+    return { ok: false, maybePublished: true, error: 'finish returned an unrecognized response' };
+  }
   return { ok: true, done: true, mediaId: videoId, permalink: 'https://www.facebook.com/reel/' + videoId };
 }
 

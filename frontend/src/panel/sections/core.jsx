@@ -23,7 +23,11 @@ export function Loading() {
 }
 
 const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n);
-const fmtDate = (d) => (d ? new Date(d).toLocaleString() : '—');
+const fmtDate = (d) => {
+  if (!d) return '—';
+  const t = new Date(String(d).replace(' ', 'T'));
+  return Number.isNaN(t.getTime()) ? String(d) : t.toLocaleString();
+};
 
 // ---------- Dashboard / Overview ----------
 

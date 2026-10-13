@@ -37,17 +37,20 @@ const EXPECTED_PAGE_ID = process.env.META_EXPECTED_PAGE_ID || '1963799503655091'
 
 // Signed, short-lived OAuth state (CSRF protection for the callback).
 function signState(ts) {
-  return crypto.createHmac('sha256', process.env.JWT_SECRET || 'no-secret')
+  if (!process.env.JWT_SECRET) return null; // fail closed on the public surface
+  return crypto.createHmac('sha256', process.env.JWT_SECRET)
     .update('meta-oauth:' + ts).digest('hex').slice(0, 32);
 }
 function makeState() {
   const ts = Date.now().toString(36);
-  return ts + '.' + signState(ts);
+  const sig = signState(ts);
+  return sig ? ts + '.' + sig : '';
 }
 function checkState(state) {
   const [ts, sig] = String(state || '').split('.');
   if (!ts || !sig) return false;
-  if (sig !== signState(ts)) return false;
+  const expect = signState(ts);
+  if (!expect || sig !== expect) return false;
   const age = Date.now() - parseInt(ts, 36);
   return age >= 0 && age < 15 * 60 * 1000;
 }
@@ -223,11 +226,12 @@ publicRouter.post('/auth/meta/secret-setup', express.urlencoded({ extended: fals
   try {
     let env = fs.readFileSync(ENV_PATH, 'utf8');
     if (/^META_APP_SECRET=.*$/m.test(env)) {
-      env = env.replace(/^META_APP_SECRET=.*$/m, 'META_APP_SECRET=' + secret);
+      env = env.replace(/^META_APP_SECRET=.*$/m, () => 'META_APP_SECRET=' + secret);
     } else {
       env = env.trimEnd() + String.fromCharCode(10) + 'META_APP_SECRET=' + secret + String.fromCharCode(10);
     }
-    fs.writeFileSync(ENV_PATH, env);
+    fs.writeFileSync(ENV_PATH + '.tmp', env);
+    fs.renameSync(ENV_PATH + '.tmp', ENV_PATH);
     process.env.META_APP_SECRET = secret; // effective immediately, no restart
     res.send(setupPage(
       'Saved and active. Now <a href="/auth/meta/start">authorize the app</a>.',

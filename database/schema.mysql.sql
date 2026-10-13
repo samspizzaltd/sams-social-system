@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS cycles (
 CREATE TABLE IF NOT EXISTS accounts (
   id                  INT AUTO_INCREMENT PRIMARY KEY,
   platform            VARCHAR(50) NOT NULL,
-  business_account_id VARCHAR(191) UNIQUE,
+  business_account_id VARCHAR(191),
+  UNIQUE KEY uniq_platform_account (platform, business_account_id),
   access_token        TEXT,
   refresh_token       TEXT,
   expires_at          DATETIME NULL,
@@ -158,3 +159,10 @@ CREATE TABLE IF NOT EXISTS publish_queue (
 -- interaction toggles) chosen by the owner at approve time. The ALTER fails
 -- harmlessly on every boot after the first (db.js logs and continues).
 ALTER TABLE publish_queue ADD COLUMN post_options TEXT NULL;
+
+-- 2026-10-13: platform-scoped uniqueness for connected accounts. The UNIQUE on
+-- business_account_id alone let a cross-platform id collision hijack another
+-- platform's row. Both ALTERs fail harmlessly once applied / on fresh schemas
+-- where the old index name does not exist (db.js logs and continues).
+ALTER TABLE accounts ADD UNIQUE KEY uniq_platform_account (platform, business_account_id);
+ALTER TABLE accounts DROP INDEX business_account_id;
