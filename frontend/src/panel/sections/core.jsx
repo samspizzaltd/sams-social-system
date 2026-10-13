@@ -67,6 +67,7 @@ const fmtDate = (d) => {
 export function Overview({ goTo }) {
   const [data, setData] = useState(null);
   const [health, setHealth] = useState(null);
+  const [realPublished, setRealPublished] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -76,6 +77,11 @@ export function Overview({ goTo }) {
     ])
       .then(([o, h]) => { setData(o.data); setHealth(h.data); })
       .catch((e) => setError(e.response?.data?.error || e.message));
+    // The only numbers that reflect the real accounts come from the publish
+    // queue - the cycle aggregates are the sandbox simulation.
+    api.get('/api/publish-queue')
+      .then((r) => setRealPublished(r.data.queue.filter((q) => q.status === 'published').length))
+      .catch(() => setRealPublished(null));
   }, []);
 
   if (error) return <ErrorBox error={error} />;
@@ -86,8 +92,12 @@ export function Overview({ goTo }) {
     <div>
       <div className="cp-stat-row">
         <Stat label="Cycles completed" value={h ? fmt(h.cyclesCompleted) : '—'} />
-        <Stat label="Posts published" value={h ? fmt(h.totalPostsPublished) : '—'} />
-        <Stat label="Total engagement" value={h ? fmt(h.totalEngagement) : '—'} />
+        <Stat label="REAL posts published" value={realPublished === null ? '—' : fmt(realPublished)}
+          hint="via the publish queue, with your approval" />
+        <Stat label="Simulated posts" value={h ? fmt(h.totalPostsPublished) : '—'}
+          hint="demo numbers from cycle sandbox runs - nothing was posted" />
+        <Stat label="Simulated engagement" value={h ? fmt(h.totalEngagement) : '—'}
+          hint="demo numbers, not from your real accounts" />
         <Stat label="Revenue recorded" value={data.revenueTotal !== null ? `₾ ${fmt(data.revenueTotal)}` : '—'} />
         <Stat label="Awaiting approval" value={data.pendingContent} />
       </div>
@@ -117,9 +127,13 @@ export function Overview({ goTo }) {
 
         <div className="cp-card">
           <h3>Recent cycles</h3>
+          <p className="cp-muted">
+            "Published" and "Engagement" here are the cycle sandbox simulation, not your
+            real accounts. Real posting happens only in Media &amp; Publishing → Publish Queue.
+          </p>
           {data.recentCycles.length === 0 ? <p className="cp-muted">No cycles stored yet.</p> : (
             <table className="cp-table">
-              <thead><tr><th>#</th><th>Status</th><th>Drafts</th><th>Published</th><th>Engagement</th><th>When</th></tr></thead>
+              <thead><tr><th>#</th><th>Status</th><th>Drafts</th><th>Published (sim.)</th><th>Engagement (sim.)</th><th>When</th></tr></thead>
               <tbody>
                 {data.recentCycles.map((c) => (
                   <tr key={c.id}>
