@@ -15,7 +15,10 @@ const DEFAULTS = {
   audience_gender: 'all',
   audience_notes: '',
   style_notes: '',
-  music_notes: ''
+  music_notes: '',
+  auto_cycle_enabled: 'false',
+  auto_cycle_times: '09:30',
+  auto_cycle_days: 'all'
 };
 
 let cache = null;

@@ -5,6 +5,89 @@ import { Stat, ErrorBox, Loading } from './core';
 const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n);
 const fmtDate = (d) => (d ? new Date(d).toLocaleString() : '—');
 
+// Live platform-connection status + the TikTok connect/disconnect controls.
+// Publishing on every platform still goes through the owner-approved queue.
+function ConnectionsView() {
+  const [meta, setMeta] = useState(null);
+  const [tiktok, setTiktok] = useState(null);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+
+  const load = useCallback(() => {
+    api.get('/api/meta/status').then((r) => setMeta(r.data)).catch(() => setMeta({ error: true }));
+    api.get('/api/tiktok/status').then((r) => setTiktok(r.data)).catch(() => setTiktok({ error: true }));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const connectTikTok = async () => {
+    setError(null); setNotice(null);
+    try {
+      const r = await api.get('/api/tiktok/connect-url');
+      window.open(r.data.url, '_blank', 'noopener');
+      setNotice('A TikTok window opened - log in with the SAM’S TikTok account there, then come back and press Refresh.');
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    }
+  };
+
+  const disconnectTikTok = async () => {
+    if (!window.confirm('Disconnect the TikTok account? Publishing to TikTok stops until you reconnect.')) return;
+    setError(null);
+    try {
+      await api.post('/api/tiktok/disconnect');
+      load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    }
+  };
+
+  const pill = (ok, text) => <span className={`cp-pill ${ok ? 'ok' : 'warn'}`}>{text}</span>;
+  const metaAccounts = (meta && meta.accounts) || [];
+  const metaConnected = metaAccounts.some((a) => a.platform === 'instagram' && a.status === 'active');
+
+  return (
+    <div className="cp-card">
+      <h3>Platform connections</h3>
+      <ErrorBox error={error} />
+      {notice && <div className="cp-success">{notice}</div>}
+      <table className="cp-table">
+        <thead><tr><th>Platform</th><th>Status</th><th>Details</th><th></th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Instagram + Facebook</td>
+            <td>{meta === null ? '…' : pill(metaConnected, metaConnected ? 'connected' : 'not connected')}</td>
+            <td className="cp-muted">
+              {metaAccounts.filter((a) => a.platform !== 'meta_user').map((a) => a.platform + ' (' + a.business_account_id + ')').join(' · ') || '—'}
+            </td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>TikTok</td>
+            <td>{tiktok === null ? '…' : pill(!!tiktok.connected, tiktok.connected ? 'connected' : (tiktok.status === 'disconnected' ? 'disconnected' : 'not connected'))}</td>
+            <td className="cp-muted">
+              {tiktok && tiktok.profile
+                ? (tiktok.profile.display_name || '') + (tiktok.profile.username ? ' (@' + tiktok.profile.username + ')' : '')
+                : tiktok && tiktok.open_id ? 'open_id ' + tiktok.open_id : 'Sandbox until the app passes TikTok review'}
+            </td>
+            <td>
+              {tiktok && tiktok.connected
+                ? <button className="cp-btn small ghost" onClick={disconnectTikTok}>Disconnect</button>
+                : <button className="cp-btn small" onClick={connectTikTok}>Connect TikTok</button>}
+            </td>
+          </tr>
+          <tr>
+            <td>YouTube</td>
+            <td><span className="cp-pill warn">not registered</span></td>
+            <td className="cp-muted">Data API v3 - requires a Google Cloud project</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+      <button className="cp-btn small ghost" style={{ marginTop: 10 }} onClick={load}>Refresh</button>
+    </div>
+  );
+}
+
 // Pull the latest completed cycle's phases out of history + detail.
 function useLatestCycle() {
   const [cycle, setCycle] = useState(null);
@@ -398,33 +481,7 @@ export function SettingsSection({ view }) {
   if (!health) return <Loading />;
 
   if (view === 'connections') {
-    const PLATFORMS = [
-      { key: 'tiktok', name: 'TikTok', note: 'Content Posting API - requires app registration + audit' },
-      { key: 'instagram', name: 'Instagram', note: 'Graph API - requires Business account + App Review' },
-      { key: 'facebook', name: 'Facebook', note: 'Shares the Meta app with Instagram' },
-      { key: 'youtube', name: 'YouTube', note: 'Data API v3 - requires Google Cloud project' }
-    ];
-    return (
-      <div className="cp-card">
-        <h3>Platform connections</h3>
-        <p className="cp-muted">
-          Publishing currently runs in sandbox mode. Each platform needs its own API approval -
-          these are external review queues (days to weeks) and the next launch blocker.
-        </p>
-        <table className="cp-table">
-          <thead><tr><th>Platform</th><th>Status</th><th>What it takes</th></tr></thead>
-          <tbody>
-            {PLATFORMS.map((p) => (
-              <tr key={p.key}>
-                <td>{p.name}</td>
-                <td><span className="cp-pill warn">sandbox</span></td>
-                <td className="cp-muted">{p.note}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
+    return <ConnectionsView />;
   }
 
   if (view === 'brand') {
@@ -435,7 +492,10 @@ export function SettingsSection({ view }) {
       { key: 'audience_location', label: 'Target audience - location', placeholder: 'Tbilisi, Georgia' },
       { key: 'audience_age', label: 'Target audience - age range', placeholder: '18-40' },
       { key: 'audience_gender', label: 'Target audience - gender (all / women / men)', placeholder: 'all' },
-      { key: 'audience_notes', label: 'Audience notes', placeholder: 'e.g. students near the university, Gulf tourists in summer' }
+      { key: 'audience_notes', label: 'Audience notes', placeholder: 'e.g. students near the university, Gulf tourists in summer' },
+      { key: 'auto_cycle_enabled', label: 'Auto-run cycles (true / false)', placeholder: 'false' },
+      { key: 'auto_cycle_times', label: 'Auto-cycle times, Tbilisi (comma-separated HH:MM)', placeholder: '09:30' },
+      { key: 'auto_cycle_days', label: 'Auto-cycle days (all, or e.g. Sun,Mon)', placeholder: 'all' }
     ];
     return (
       <div className="cp-card cp-form-card">

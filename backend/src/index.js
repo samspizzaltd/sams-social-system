@@ -11,6 +11,10 @@ const cycleRepository = require('./database/cycleRepository');
 const claude = require('./services/claudeClient');
 const mediaRoutes = require('./routes/media');
 const metaRoutes = require('./routes/meta');
+const publishQueueRoutes = require('./routes/publishQueue');
+const harvestRoutes = require('./routes/harvest');
+const tiktokRoutes = require('./routes/tiktok');
+const scheduler = require('./services/scheduler');
 const brandConfig = require('./services/brandConfig');
 
 const app = express();
@@ -24,7 +28,8 @@ app.use(express.json());
 app.use('/auth', authRoutes);
 // Uploaded media is public-read (it is destined for social media anyway);
 // uploading/deleting requires a JWT via the /api routes below.
-app.use('/', metaRoutes); // /auth/meta/start + /auth/meta/callback (public by design)
+app.use('/', metaRoutes.publicRouter); // ONLY the OAuth entry points are public
+app.use('/', tiktokRoutes.publicRouter); // same rule: OAuth entry points only
 app.use('/media', express.static(mediaRoutes.MEDIA_DIR, {
   maxAge: '7d',
   setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -32,7 +37,10 @@ app.use('/media', express.static(mediaRoutes.MEDIA_DIR, {
 app.use('/api', verifyToken);
 app.use('/api', controlRoutes);
 app.use('/api', mediaRoutes.router);
-app.use('/api', metaRoutes); // adds JWT-protected /api/meta/status
+app.use('/api', metaRoutes.apiRouter); // status, diag and reel endpoints - JWT only
+app.use('/api', publishQueueRoutes);
+app.use('/api', harvestRoutes);
+app.use('/api', tiktokRoutes.apiRouter);
 
 // Full system diagnostics (JWT-protected; public /health is deliberately slim)
 app.get('/api/system', (req, res) => {
@@ -46,7 +54,8 @@ app.get('/api/system', (req, res) => {
     persistence: dbStatus.available ? 'mysql' : 'in-memory only',
     contentGeneration: claude.status().available ? 'claude' : 'fallback templates',
     database: dbStatus,
-    claude: claude.status()
+    claude: claude.status(),
+    scheduler: scheduler.status()
   });
 });
 
@@ -100,22 +109,34 @@ app.get('/api/agents', async (req, res) => {
 let cycleInProgress = false;
 let cycleStartedAt = 0;
 const CYCLE_WATCHDOG_MS = 15 * 60 * 1000; // a hung cycle must not block runs forever
-app.post('/api/cycle/run', async (req, res) => {
+let cycleEpoch = 0;
+async function runCycleGuarded() {
   if (cycleInProgress && Date.now() - cycleStartedAt < CYCLE_WATCHDOG_MS) {
-    return res.status(409).json({ error: 'A cycle is already running' });
+    const err = new Error('A cycle is already running');
+    err.status = 409;
+    throw err;
   }
+  const myEpoch = ++cycleEpoch;
   cycleInProgress = true;
   cycleStartedAt = Date.now();
   try {
-    const cycle = await orchestrator.runAutonomousCycle();
+    return await orchestrator.runAutonomousCycle();
+  } finally {
+    // Only the newest cycle may free the mutex - a hung cycle that the
+    // watchdog already replaced must not unlock its replacement.
+    if (cycleEpoch === myEpoch) cycleInProgress = false;
+  }
+}
+
+app.post('/api/cycle/run', async (req, res) => {
+  try {
+    const cycle = await runCycleGuarded();
     res.status(cycle.status === 'completed' ? 200 : 500).json({
       success: cycle.status === 'completed',
       cycle
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
-  } finally {
-    cycleInProgress = false;
+    res.status(error.status || 500).json({ error: error.message });
   }
 });
 
@@ -147,6 +168,7 @@ const server = app.listen(port, '0.0.0.0', () => {
   // database problem degrades persistence rather than taking the API down.
   db.init().catch(err => console.warn('[db] init failed: ' + err.message));
   claude.init();
+  scheduler.start(runCycleGuarded);
 });
 
 server.on('error', (err) => {

@@ -6,6 +6,7 @@ import {
   AgentsSection, SettingsSection
 } from './sections/growth';
 import { MediaLibrary, RenderQueue } from './sections/media';
+import { PublishQueue } from './sections/publish';
 
 const MENU = [
   {
@@ -25,6 +26,14 @@ const MENU = [
     subs: [
       { id: 'run', label: 'Run & Monitor' },
       { id: 'history', label: 'History' }
+    ]
+  },
+  {
+    id: 'media', label: 'Media & Publishing', icon: '🎬',
+    subs: [
+      { id: 'library', label: 'Media Library' },
+      { id: 'renders', label: 'Render Queue' },
+      { id: 'publish', label: 'Publish Queue' }
     ]
   },
   {
@@ -89,6 +98,7 @@ function ControlPanel({ user, onLogout }) {
       case 'growth/schedule': return <GrowthSection view="schedule" key="schedule" />;
       case 'media/library': return <MediaLibrary key="medialib" />;
       case 'media/renders': return <RenderQueue key="renders" />;
+      case 'media/publish': return <PublishQueue key="publish" />;
       case 'money/ledger': return <MonetizationSection view="ledger" key="ledger" />;
       case 'money/record': return <MonetizationSection view="record" key="record" />;
       case 'money/opportunities': return <MonetizationSection view="opportunities" key="opps" />;

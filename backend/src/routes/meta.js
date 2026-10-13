@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const db = require('../database/db');
@@ -11,9 +12,45 @@ const db = require('../database/db');
 // Instagram business account id, and stores everything in the accounts table.
 // Secrets live in the server .env (META_APP_ID, META_APP_SECRET), never in code.
 
-const router = express.Router();
+// Two routers: publicRouter carries only the OAuth entry points that must be
+// reachable without a JWT; apiRouter carries everything else and is mounted
+// behind the /api JWT gate. Mounting the wrong one publicly exposed the
+// publish endpoints once - never merge these again.
+const publicRouter = express.Router();
+const apiRouter = express.Router();
+const router = apiRouter; // default for /meta/* routes below
 
 const GRAPH = 'https://graph.facebook.com/v26.0';
+
+// Escape anything that goes into an HTML response - several of these pages
+// echo query params or upstream error text (reflected-XSS sink otherwise).
+function esc(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// The ONLY Facebook Page this app may bind to. A stranger completing the
+// public consent flow with their own Facebook account must never be able to
+// rebind the publisher to their Page.
+const EXPECTED_PAGE_ID = process.env.META_EXPECTED_PAGE_ID || '1963799503655091';
+
+// Signed, short-lived OAuth state (CSRF protection for the callback).
+function signState(ts) {
+  return crypto.createHmac('sha256', process.env.JWT_SECRET || 'no-secret')
+    .update('meta-oauth:' + ts).digest('hex').slice(0, 32);
+}
+function makeState() {
+  const ts = Date.now().toString(36);
+  return ts + '.' + signState(ts);
+}
+function checkState(state) {
+  const [ts, sig] = String(state || '').split('.');
+  if (!ts || !sig) return false;
+  if (sig !== signState(ts)) return false;
+  const age = Date.now() - parseInt(ts, 36);
+  return age >= 0 && age < 15 * 60 * 1000;
+}
 const SCOPES = [
   'instagram_basic',
   'instagram_content_publish',
@@ -47,24 +84,26 @@ async function saveAccount(platform, businessAccountId, accessToken, expiresAt) 
 
 // The owner opens this URL in a browser while logged into the panel is NOT
 // required - the consent itself happens on facebook.com as the owner.
-router.get('/auth/meta/start', (req, res) => {
+publicRouter.get('/auth/meta/start', (req, res) => {
   const cfg = appConfig();
   if (!cfg.id) return res.status(503).send('META_APP_ID not configured in .env');
   const url = 'https://www.facebook.com/v26.0/dialog/oauth' +
     '?client_id=' + encodeURIComponent(cfg.id) +
     '&redirect_uri=' + encodeURIComponent(cfg.redirect) +
     '&scope=' + encodeURIComponent(SCOPES) +
+    '&state=' + encodeURIComponent(makeState()) +
     '&response_type=code';
   res.redirect(url);
 });
 
-router.get('/auth/meta/callback', async (req, res) => {
+publicRouter.get('/auth/meta/callback', async (req, res) => {
   const cfg = appConfig();
   const fail = (msg) => res.status(500).send(
-    '<h2>Meta connection failed</h2><p>' + msg + '</p><p><a href="/auth/meta/start">Try again</a></p>'
+    '<h2>Meta connection failed</h2><p>' + esc(msg) + '</p><p><a href="/auth/meta/start">Try again</a></p>'
   );
 
   try {
+    if (!checkState(req.query.state)) return fail('Missing or expired state - start again from /auth/meta/start');
     if (req.query.error) return fail('Facebook returned: ' + (req.query.error_description || req.query.error));
     if (!req.query.code) return fail('No authorization code received');
     if (!cfg.id || !cfg.secret) return fail('META_APP_ID / META_APP_SECRET not configured in .env');
@@ -98,8 +137,12 @@ router.get('/auth/meta/callback', async (req, res) => {
     const pages = (j.data || []);
     if (!pages.length) return fail('No Facebook Pages on this account - the login must be the profile that admins the Sams Pizza Page');
 
-    // Prefer the page with a linked Instagram business account.
-    const page = pages.find(p => p.instagram_business_account) || pages[0];
+    // Bind ONLY to the configured Sam's Page. Anyone else who walks through
+    // the public consent flow gets refused and nothing is overwritten.
+    const page = pages.find(p => String(p.id) === EXPECTED_PAGE_ID);
+    if (!page) {
+      return fail('This Facebook account does not admin the configured Sams Pizza Page (id ' + EXPECTED_PAGE_ID + ') - nothing was saved. Sign into Facebook as the Page admin and try again.');
+    }
     const ig = page.instagram_business_account || null;
 
     const saved = [
@@ -114,8 +157,8 @@ router.get('/auth/meta/callback', async (req, res) => {
     res.send(
       '<h2 style="font-family:sans-serif">Meta connected</h2>' +
       '<ul style="font-family:sans-serif">' +
-      '<li>Facebook Page: ' + page.name + ' (' + page.id + ')</li>' +
-      '<li>Instagram: ' + (ig ? '@' + ig.username + ' (' + ig.id + ')' : 'NOT linked to this Page - link it in Instagram settings and reconnect') + '</li>' +
+      '<li>Facebook Page: ' + esc(page.name) + ' (' + esc(page.id) + ')</li>' +
+      '<li>Instagram: ' + (ig ? '@' + esc(ig.username) + ' (' + esc(ig.id) + ')' : 'NOT linked to this Page - link it in Instagram settings and reconnect') + '</li>' +
       '<li>User token valid until: ' + expiresAt.toISOString().slice(0, 10) + '</li>' +
       '</ul>' +
       '<p style="font-family:sans-serif">You can close this window. The publisher now holds the tokens.</p>'
@@ -147,11 +190,25 @@ function setupPage(msg, ok) {
     '</form></body>';
 }
 
-router.get('/auth/meta/secret-setup', (req, res) => {
+publicRouter.get('/auth/meta/secret-setup', (req, res) => {
   res.send(setupPage(null, false));
 });
 
-router.post('/auth/meta/secret-setup', express.urlencoded({ extended: false }), (req, res) => {
+const setupAttempts = new Map();
+publicRouter.post('/auth/meta/secret-setup', express.urlencoded({ extended: false }), (req, res) => {
+  // Last XFF hop = the one Apache appended (the first is client-spoofable).
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',').pop().trim();
+  const now = Date.now();
+  const entry = setupAttempts.get(ip) || { count: 0, windowStart: now };
+  if (now - entry.windowStart > 15 * 60 * 1000) { entry.count = 0; entry.windowStart = now; }
+  entry.count += 1;
+  setupAttempts.set(ip, entry);
+  if (setupAttempts.size > 500) {
+    for (const [k, v] of setupAttempts) {
+      if (now - v.windowStart > 15 * 60 * 1000) setupAttempts.delete(k);
+    }
+  }
+  if (entry.count > 5) return res.status(429).send(setupPage('Too many attempts - try again in 15 minutes.', false));
   const b = req.body || {};
   if (!process.env.OWNER_PASSWORD || b.password !== process.env.OWNER_PASSWORD) {
     return res.status(401).send(setupPage('Wrong panel password.', false));
@@ -176,7 +233,7 @@ router.post('/auth/meta/secret-setup', express.urlencoded({ extended: false }), 
       'Saved and active. Now <a href="/auth/meta/start">authorize the app</a>.',
       true));
   } catch (err) {
-    res.status(500).send(setupPage('Could not write .env: ' + err.message, false));
+    res.status(500).send(setupPage('Could not write .env: ' + esc(err.message), false));
   }
 });
 
@@ -211,64 +268,11 @@ router.get('/meta/diag', async (req, res) => {
 
 // ---------- Reel publishing (two-step because the proxy cuts at 60s) ----------
 
-async function igAccount() {
-  const rows = await db.query("SELECT business_account_id, access_token FROM accounts WHERE platform = 'instagram' AND status = 'active' LIMIT 1");
-  return rows && rows.length ? rows[0] : null;
-}
 
-// Step 1: create the media container. Instagram downloads the video from
-// video_url (must be a public HTTPS URL, e.g. our own /media files).
-router.post('/meta/reel/start', async (req, res) => {
-  try {
-    const b = req.body || {};
-    if (!b.video_url || !/^https:\/\//.test(b.video_url)) {
-      return res.status(400).json({ error: 'video_url must be a public https URL' });
-    }
-    const ig = await igAccount();
-    if (!ig) return res.status(503).json({ error: 'Instagram not connected - run /auth/meta/start first' });
-
-    const params = new URLSearchParams({
-      media_type: 'REELS',
-      video_url: b.video_url,
-      caption: String(b.caption || '').slice(0, 2200),
-      access_token: ig.access_token
-    });
-    const r = await fetch(GRAPH + '/' + ig.business_account_id + '/media', { method: 'POST', body: params });
-    const j = await r.json();
-    if (!j.id) return res.status(502).json({ error: 'Container creation failed', detail: j.error && j.error.message });
-    res.json({ creation_id: j.id });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Step 2: poll until Instagram finished processing, then publish.
-router.post('/meta/reel/finish', async (req, res) => {
-  try {
-    const b = req.body || {};
-    if (!b.creation_id) return res.status(400).json({ error: 'creation_id required' });
-    const ig = await igAccount();
-    if (!ig) return res.status(503).json({ error: 'Instagram not connected' });
-
-    const st = await fetch(GRAPH + '/' + b.creation_id + '?fields=status_code,status&access_token=' + encodeURIComponent(ig.access_token));
-    const sj = await st.json();
-    if (sj.error) return res.status(502).json({ error: sj.error.message });
-    if (sj.status_code !== 'FINISHED') {
-      return res.json({ published: false, status_code: sj.status_code, status: sj.status });
-    }
-
-    const params = new URLSearchParams({ creation_id: b.creation_id, access_token: ig.access_token });
-    const r = await fetch(GRAPH + '/' + ig.business_account_id + '/media_publish', { method: 'POST', body: params });
-    const j = await r.json();
-    if (!j.id) return res.status(502).json({ error: 'Publish failed', detail: j.error && j.error.message });
-
-    const perma = await fetch(GRAPH + '/' + j.id + '?fields=permalink&access_token=' + encodeURIComponent(ig.access_token));
-    const pj = await perma.json();
-    res.json({ published: true, media_id: j.id, permalink: pj.permalink || null });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// The manual reel endpoints that used to live here were REMOVED on
+// 2026-10-13: every publish now goes through the owner-approved queue
+// (routes/publishQueue.js + the scheduler finisher). Do not add a direct
+// publish route again.
 
 // JWT-protected status for the panel (mounted under /api by index.js).
 router.get('/meta/status', async (req, res) => {
@@ -283,4 +287,4 @@ router.get('/meta/status', async (req, res) => {
   });
 });
 
-module.exports = router;
+module.exports = { publicRouter, apiRouter };

@@ -136,3 +136,25 @@ CREATE TABLE IF NOT EXISTS render_jobs (
   updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_render_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS publish_queue (
+  id                 INT AUTO_INCREMENT PRIMARY KEY,
+  platform           VARCHAR(20) NOT NULL,
+  media_id           INT NOT NULL,
+  caption            TEXT NOT NULL,
+  status             VARCHAR(24) DEFAULT 'pending_review',
+  creation_id        VARCHAR(64) NULL,
+  attempts           INT DEFAULT 0,
+  published_media_id VARCHAR(64) NULL,
+  permalink          VARCHAR(500) NULL,
+  error              TEXT NULL,
+  created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  published_at       DATETIME NULL,
+  INDEX idx_pubq_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 2026-10-13: TikTok direct post needs per-row posting options (privacy level,
+-- interaction toggles) chosen by the owner at approve time. The ALTER fails
+-- harmlessly on every boot after the first (db.js logs and continues).
+ALTER TABLE publish_queue ADD COLUMN post_options TEXT NULL;

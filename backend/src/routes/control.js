@@ -106,6 +106,7 @@ const SETTING_KEYS = [
   'brand_voice', 'posting_cadence', 'auto_approve_threshold',
   'audience_location', 'audience_age', 'audience_gender', 'audience_notes',
   'style_notes', 'music_notes',
+  'auto_cycle_enabled', 'auto_cycle_times', 'auto_cycle_days',
   'platform_tiktok_enabled', 'platform_instagram_enabled',
   'platform_facebook_enabled', 'platform_youtube_enabled'
 ];

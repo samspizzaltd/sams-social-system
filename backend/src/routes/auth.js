@@ -38,8 +38,12 @@ router.post('/login', (req, res) => {
     });
   }
 
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-  if (rateLimited(String(ip).split(',')[0].trim())) {
+  // Apache APPENDS the real client IP to any client-supplied X-Forwarded-For,
+  // so the trustworthy hop is the LAST one - the first is attacker-chosen and
+  // would give every request its own fresh rate-limit bucket.
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown')
+    .split(',').pop().trim();
+  if (rateLimited(ip)) {
     return res.status(429).json({ error: 'Too many login attempts - try again in 15 minutes' });
   }
 
@@ -49,7 +53,7 @@ router.post('/login', (req, res) => {
   }
 
   // A successful login clears the counter so normal use never locks the owner out.
-  attempts.delete(String(ip).split(',')[0].trim());
+  attempts.delete(ip);
 
   const token = jwt.sign(
     { email, role: 'owner', id: 1 },

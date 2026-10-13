@@ -298,3 +298,17 @@
 code { background: #f3efed; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
 
 .cp-brand-logo { width: 44px; height: 44px; object-fit: contain; }
+
+/* ---------- publish review queue ---------- */
+
+.cp-review-video {
+  max-width: 240px; max-height: 420px; border-radius: 12px;
+  border: 1px solid var(--cp-border); display: block; margin: 10px 0; background: #000;
+}
+.cp-caption-label { display: block; font-size: 12px; color: var(--cp-muted); margin: 10px 0; }
+.cp-caption-label textarea {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 4px;
+  padding: 9px 11px; border: 1px solid var(--cp-border); border-radius: 8px;
+  font: inherit; font-size: 13.5px; resize: vertical;
+}
+.cp-check { flex-direction: row !important; align-items: center; gap: 7px !important; font-size: 13.5px !important; color: var(--cp-text) !important; }

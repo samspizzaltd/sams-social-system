@@ -108,13 +108,22 @@ async function migrate() {
 }
 
 async function query(sql, params) {
-  if (!state.available) return null;
+  // Gate on the pool, not on `available`: the mysql2 pool reconnects by
+  // itself after a MySQL restart, so a past fatal error must never latch
+  // persistence off for good (shared-hosting MySQL blips are routine and
+  // nobody can restart the Node process quickly on this host).
+  if (!state.pool) return null;
   try {
     const [rows] = await state.pool.query(sql, params || []);
+    if (!state.available) {
+      state.available = true;
+      console.log('[db] connection recovered');
+      if (!state.migrated) migrate().catch(() => {});
+    }
     return rows;
   } catch (err) {
     state.lastError = err.message;
-    // A dead connection means persistence is gone, not just one bad query.
+    // Reporting only - the next query still tries the pool.
     if (err.code === 'ECONNREFUSED' || err.code === 'PROTOCOL_CONNECTION_LOST' || err.code === 'ETIMEDOUT' || err.fatal) {
       state.available = false;
     }
