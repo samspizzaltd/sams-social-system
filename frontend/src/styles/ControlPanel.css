@@ -312,3 +312,36 @@ code { background: #f3efed; border-radius: 4px; padding: 1px 5px; font-size: 12p
   font: inherit; font-size: 13.5px; resize: vertical;
 }
 .cp-check { flex-direction: row !important; align-items: center; gap: 7px !important; font-size: 13.5px !important; color: var(--cp-text) !important; }
+
+/* Two-tap confirm buttons: armed = about to do something irreversible */
+.cp-btn.cp-armed,
+.cp-btn.small.cp-armed {
+  background: #c62828;
+  color: #fff;
+  border-color: #c62828;
+  animation: cp-armed-pulse 1s ease-in-out infinite alternate;
+}
+@keyframes cp-armed-pulse {
+  from { box-shadow: 0 0 0 0 rgba(198, 40, 40, 0.5); }
+  to   { box-shadow: 0 0 0 6px rgba(198, 40, 40, 0); }
+}
+
+/* Drag & drop upload zone */
+.cp-dropzone {
+  border: 2px dashed #d8c7bd;
+  border-radius: 10px;
+  padding: 26px 14px;
+  text-align: center;
+  color: #8a7a70;
+  margin-bottom: 10px;
+  transition: border-color .15s, background .15s;
+}
+.cp-dropzone.drag {
+  border-color: #f15c22;
+  background: rgba(241, 92, 34, 0.07);
+  color: #f15c22;
+}
+.cp-dropzone.busy {
+  border-style: solid;
+  color: #f15c22;
+}

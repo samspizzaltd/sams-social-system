@@ -22,6 +22,39 @@ export function Loading() {
   return <div className="cp-loading">Loading…</div>;
 }
 
+// Two-tap confirmation that lives IN the page - never window.confirm().
+// Browser dialogs can be suppressed ("don't show again" checkbox), after
+// which confirm() silently answers No forever and buttons look dead
+// (exactly what happened to the owner on 2026-10-13).
+// First tap arms the button and shows confirmLabel; second tap within 5s
+// fires onConfirm; doing nothing disarms it.
+export function ConfirmButton({ label, confirmLabel, onConfirm, className = 'cp-btn small', disabled }) {
+  const [armed, setArmed] = useState(false);
+  const timerRef = useRef(null);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+  const click = () => {
+    if (!armed) {
+      setArmed(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setArmed(false), 5000);
+      return;
+    }
+    clearTimeout(timerRef.current);
+    setArmed(false);
+    onConfirm();
+  };
+  return (
+    <button
+      type="button"
+      className={className + (armed ? ' cp-armed' : '')}
+      disabled={disabled}
+      onClick={click}
+    >
+      {armed ? (confirmLabel || 'Tap again to confirm') : label}
+    </button>
+  );
+}
+
 const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n);
 const fmtDate = (d) => {
   if (!d) return '—';

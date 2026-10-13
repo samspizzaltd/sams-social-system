@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../api';
-import { ErrorBox, Loading } from './core';
+import { ErrorBox, Loading, ConfirmButton } from './core';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 // MySQL dateStrings ("YYYY-MM-DD HH:MM:SS") are not parseable on every
@@ -114,7 +114,6 @@ export function PublishQueue() {
   };
 
   const act = async (id, action, body) => {
-    if (action === 'approve' && !body && !window.confirm('Publish this to the real account now?')) return;
     setBusy(id); setError(null);
     try {
       await api.post(`/api/publish-queue/${id}/${action}`, body || {});
@@ -282,18 +281,23 @@ export function PublishQueue() {
                     {q.permalink ? <> · <a href={q.permalink} target="_blank" rel="noreferrer">view post</a></> : null}
                   </span>
                   {['pending_review', 'failed'].includes(q.status) && (
-                    <button className="cp-btn small" disabled={busy === q.id}
-                      onClick={() => (q.platform === 'tiktok' ? openTkSheet(q.id) : act(q.id, 'approve'))}>
-                      {q.status === 'failed' ? 'Retry' : 'Approve & publish'}
-                    </button>
+                    q.platform === 'tiktok' ? (
+                      <button className="cp-btn small" disabled={busy === q.id} onClick={() => openTkSheet(q.id)}>
+                        {q.status === 'failed' ? 'Retry' : 'Approve & publish'}
+                      </button>
+                    ) : (
+                      <ConfirmButton className="cp-btn small" disabled={busy === q.id}
+                        label={q.status === 'failed' ? 'Retry' : 'Approve & publish'}
+                        confirmLabel="Publish for real?"
+                        onConfirm={() => act(q.id, 'approve')} />
+                    )
                   )}
                   {q.status === 'unknown' && (
                     <span className="cp-muted">Check the account before acting - this post may already be live.</span>
                   )}
                   {['pending_review', 'failed', 'approved_publishing', 'unknown'].includes(q.status) && (
-                    <button className="cp-btn small ghost" disabled={busy === q.id} onClick={() => act(q.id, 'drop')}>
-                      Drop
-                    </button>
+                    <ConfirmButton className="cp-btn small ghost" disabled={busy === q.id}
+                      label="Drop" confirmLabel="Really drop?" onConfirm={() => act(q.id, 'drop')} />
                   )}
                 </div>
                 {tkSheet && tkSheet.id === q.id && (
@@ -344,18 +348,16 @@ export function PublishQueue() {
                     )}
                     <div className="cp-content-actions">
                       <button className="cp-btn small ghost" onClick={() => setTkSheet(null)}>Cancel</button>
-                      <button className="cp-btn small" disabled={busy === q.id || tkSheet.loading || !tkSheet.privacy_level}
-                        onClick={() => {
-                          if (!window.confirm('Publish this to the real TikTok account now?')) return;
-                          act(q.id, 'approve', {
-                            privacy_level: tkSheet.privacy_level,
-                            disable_comment: tkSheet.disable_comment,
-                            disable_duet: tkSheet.disable_duet,
-                            disable_stitch: tkSheet.disable_stitch
-                          });
-                        }}>
-                        Confirm & publish to TikTok
-                      </button>
+                      <ConfirmButton className="cp-btn small"
+                        disabled={busy === q.id || tkSheet.loading || !tkSheet.privacy_level}
+                        label="Confirm & publish to TikTok"
+                        confirmLabel="Tap again - this posts for real"
+                        onConfirm={() => act(q.id, 'approve', {
+                          privacy_level: tkSheet.privacy_level,
+                          disable_comment: tkSheet.disable_comment,
+                          disable_duet: tkSheet.disable_duet,
+                          disable_stitch: tkSheet.disable_stitch
+                        })} />
                     </div>
                   </div>
                 )}

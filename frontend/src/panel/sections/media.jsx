@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../api';
-import { ErrorBox, Loading } from './core';
+import { ErrorBox, Loading, ConfirmButton } from './core';
 
-const fmtDate = (d) => (d ? new Date(d).toLocaleString() : '—');
+const fmtDate = (d) => {
+  if (!d) return '—';
+  const t = new Date(String(d).replace(' ', 'T'));
+  return Number.isNaN(t.getTime()) ? String(d) : t.toLocaleString();
+};
 const fmtSize = (b) => {
   if (!b) return '';
   if (b > 1048576) return (b / 1048576).toFixed(1) + ' MB';
@@ -29,23 +33,56 @@ export function MediaLibrary() {
 
   useEffect(() => { load(); }, [load]);
 
-  const onUpload = async (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    setError(null); setNotice(null); setUploading(true);
-    try {
-      const form = new FormData();
-      form.append('file', file);
-      form.append('title', file.name);
-      await api.post('/api/media/upload', form, { timeout: 180000 });
-      setNotice('Uploaded: ' + file.name);
-      load();
-    } catch (err) {
-      setError(err.response?.data?.error || err.message);
-    } finally {
-      setUploading(false);
-      e.target.value = '';
+  const [dragOver, setDragOver] = useState(false);
+  const [progress, setProgress] = useState(null); // {done, total, current}
+
+  // Accepts one or many files (from the picker or drag & drop) and uploads
+  // them one by one - the server takes a single file per request.
+  const uploadFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter(
+      (f) => /^(image|video)\//.test(f.type) || /\.(jpe?g|png|webp|gif|mp4|mov|webm)$/i.test(f.name)
+    );
+    const skipped = (fileList ? fileList.length : 0) - files.length;
+    if (!files.length) {
+      setError('No usable files - drop photos (jpg, png, webp, gif) or videos (mp4, mov, webm).');
+      return;
     }
+    setError(null); setNotice(null); setUploading(true);
+    const failures = [];
+    let done = 0;
+    for (const file of files) {
+      setProgress({ done, total: files.length, current: file.name });
+      try {
+        const form = new FormData();
+        form.append('file', file);
+        form.append('title', file.name);
+        await api.post('/api/media/upload', form, { timeout: 180000 });
+        done++;
+        load(); // each finished file appears in the library right away
+      } catch (err) {
+        failures.push(file.name + ': ' + (err.response?.data?.error || err.message));
+      }
+    }
+    setUploading(false);
+    setProgress(null);
+    if (failures.length) {
+      setError('Uploaded ' + done + ' of ' + files.length + '. Failed - ' + failures.join(' | '));
+    } else {
+      setNotice('Uploaded ' + done + (done === 1 ? ' file' : ' files') +
+        (skipped > 0 ? ' (' + skipped + ' skipped - not a photo/video)' : ''));
+    }
+    load();
+  };
+
+  const onUpload = async (e) => {
+    await uploadFiles(e.target.files);
+    e.target.value = '';
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (!uploading) uploadFiles(e.dataTransfer.files);
   };
 
   const addPath = async (e) => {
@@ -62,7 +99,6 @@ export function MediaLibrary() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm('Remove this media entry?')) return;
     try { await api.delete(`/api/media/${id}`); load(); }
     catch (err) { setError(err.response?.data?.error || err.message); }
   };
@@ -74,10 +110,22 @@ export function MediaLibrary() {
 
       <div className="cp-card-row">
         <div className="cp-card">
-          <h3>Upload photo or video</h3>
-          <p className="cp-muted">Stored on the server (max 60 MB). Photos and short clips of dishes, the kitchen, the shop front.</p>
-          <input type="file" accept="image/*,video/*" onChange={onUpload} disabled={uploading} />
-          {uploading && <p className="cp-muted">Uploading…</p>}
+          <h3>Upload photos or videos</h3>
+          <p className="cp-muted">Stored on the server (max 60 MB each). Photos and short clips of dishes, the kitchen, the shop front.</p>
+          <div
+            className={'cp-dropzone' + (dragOver ? ' drag' : '') + (uploading ? ' busy' : '')}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragEnter={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDrop}
+          >
+            {uploading && progress ? (
+              <span>Uploading {progress.done + 1} of {progress.total}: {progress.current}…</span>
+            ) : (
+              <span>{dragOver ? 'Drop them here' : 'Drag & drop files here (one or many)'}</span>
+            )}
+          </div>
+          <input type="file" accept="image/*,video/*" multiple onChange={onUpload} disabled={uploading} />
         </div>
 
         <div className="cp-card">
@@ -122,7 +170,7 @@ export function MediaLibrary() {
                   <td><span className={`cp-pill ${m.kind === 'rendered' ? 'ok' : 'warn'}`}>{m.kind}</span></td>
                   <td className="cp-muted">{m.url_path ? 'server ' + (fmtSize(m.size_bytes) || '') : m.local_path}</td>
                   <td className="cp-muted">{fmtDate(m.created_at)}</td>
-                  <td><button className="cp-btn small ghost" onClick={() => remove(m.id)}>Remove</button></td>
+                  <td><ConfirmButton className="cp-btn small ghost" label="Remove" confirmLabel="Really remove?" onConfirm={() => remove(m.id)} /></td>
                 </tr>
               ))}
             </tbody>

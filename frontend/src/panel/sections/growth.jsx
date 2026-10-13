@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../api';
-import { Stat, ErrorBox, Loading } from './core';
+import { Stat, ErrorBox, Loading, ConfirmButton } from './core';
 
 const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n);
 const fmtDate = (d) => {
@@ -42,7 +42,6 @@ function ConnectionsView() {
   };
 
   const disconnectTikTok = async () => {
-    if (!window.confirm('Disconnect the TikTok account? Publishing to TikTok stops until you reconnect.')) return;
     setError(null);
     try {
       await api.post('/api/tiktok/disconnect');
@@ -85,7 +84,7 @@ function ConnectionsView() {
             </td>
             <td>
               {tiktok && tiktok.connected
-                ? <button className="cp-btn small ghost" onClick={disconnectTikTok}>Disconnect</button>
+                ? <ConfirmButton className="cp-btn small ghost" label="Disconnect" confirmLabel="Really disconnect?" onConfirm={disconnectTikTok} />
                 : <button className="cp-btn small" disabled={!!(tiktok && tiktok.unavailable)} onClick={connectTikTok}>Connect TikTok</button>}
               {connectUrl && !(tiktok && tiktok.connected) && (
                 <div><a href={connectUrl} target="_blank" rel="noopener noreferrer" onClick={() => setConnectUrl(null)}>Open TikTok login</a></div>
@@ -286,7 +285,6 @@ export function MonetizationSection({ view }) {
   };
 
   const remove = async (id) => {
-    if (!window.confirm('Delete this revenue entry? This cannot be undone.')) return;
     try { await api.delete(`/api/revenue/${id}`); load(); }
     catch (err) { setError(err.response?.data?.error || err.message); }
   };
@@ -415,7 +413,7 @@ export function MonetizationSection({ view }) {
                   <td>{e.source}</td>
                   <td>{e.currency} {fmt(Number(e.amount))}</td>
                   <td>{e.note || ''}</td>
-                  <td><button className="cp-btn small ghost" onClick={() => remove(e.id)}>Delete</button></td>
+                  <td><ConfirmButton className="cp-btn small ghost" label="Delete" confirmLabel="Really delete?" onConfirm={() => remove(e.id)} /></td>
                 </tr>
               ))}
             </tbody>
