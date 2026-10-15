@@ -204,4 +204,57 @@ router.post('/render-jobs/:id/status', async (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/render-jobs/:id - take ONE job out of the queue.
+//
+// A job the worker is mid-render on is refused by default (409). Deleting it
+// leaves the worker rendering into a row that no longer exists; its next status
+// POST then 404s, which it survives (those calls are best-effort) but the render
+// is wasted, so it has to be asked for deliberately with ?force=1.
+//
+// Nothing else is touched. A finished job's rendered video stays in the Library
+// on purpose - it may already be queued to publish. Remove that separately with
+// DELETE /api/media/:id.
+router.delete('/render-jobs/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid job id' });
+
+  const rows = await db.query('SELECT status FROM render_jobs WHERE id = ?', [id]);
+  if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (!rows.length) return res.status(404).json({ error: 'Job not found' });
+
+  const was = String(rows[0].status || '');
+  const force = req.query.force === '1' || req.query.force === 'true';
+  if (was === 'rendering' && !force) {
+    return res.status(409).json({
+      error: 'That job is being rendered right now. Wait for it to finish, or repeat with ?force=1 to delete it anyway.',
+      status: was
+    });
+  }
+
+  const del = await db.query('DELETE FROM render_jobs WHERE id = ?', [id]);
+  if (del === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (!del.affectedRows) return res.status(404).json({ error: 'Job not found' });
+  res.json({ ok: true, deleted: 1, was: was });
+});
+
+// DELETE /api/render-jobs?status=queued|done|failed|finished - clear the queue.
+//
+// 'finished' is done + failed. 'rendering' is never cleared in bulk, force or
+// not: pulling a job out from under the worker stays a deliberate, one-id act.
+// It is rarely what you want anyway - restarting the worker puts a stranded
+// 'rendering' job back to 'queued' by itself.
+router.delete('/render-jobs', async (req, res) => {
+  const SETS = { queued: ['queued'], done: ['done'], failed: ['failed'], finished: ['done', 'failed'] };
+  const wanted = SETS[String(req.query.status || '')];
+  if (!wanted) {
+    return res.status(400).json({ error: 'status must be one of: queued, done, failed, finished' });
+  }
+  const del = await db.query(
+    'DELETE FROM render_jobs WHERE status IN (' + wanted.map(() => '?').join(',') + ')',
+    wanted
+  );
+  if (del === null) return res.status(503).json({ error: 'Database unavailable' });
+  res.json({ ok: true, deleted: del.affectedRows });
+});
+
 module.exports = { router, MEDIA_DIR };

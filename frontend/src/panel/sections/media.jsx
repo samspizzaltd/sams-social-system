@@ -236,6 +236,30 @@ export function RenderQueue() {
     }
   };
 
+  // Delete one job. A 'rendering' job needs ?force=1 (the API refuses it with 409
+  // otherwise), so the button for that row says so rather than hiding it behind a retry.
+  const remove = async (id, force) => {
+    setError(null); setNotice(null);
+    try {
+      await api.delete('/api/render-jobs/' + id + (force ? '?force=1' : ''));
+      setNotice('Deleted job #' + id + '. A rendered video, if there was one, stays in the Library.');
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    }
+  };
+
+  const clearFinished = async () => {
+    setError(null); setNotice(null);
+    try {
+      const r = await api.delete('/api/render-jobs?status=finished');
+      setNotice('Cleared ' + r.data.deleted + ' finished or failed job(s). Rendered videos stay in the Library.');
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    }
+  };
+
   const statusPill = (s) => (s === 'done' ? 'ok' : s === 'failed' ? 'err' : 'warn');
 
   return (
@@ -299,7 +323,7 @@ export function RenderQueue() {
           <p className="cp-muted">No render jobs yet.</p>
         ) : (
           <table className="cp-table">
-            <thead><tr><th>#</th><th>Template</th><th>Content</th><th>Status</th><th>Output</th><th>When</th></tr></thead>
+            <thead><tr><th>#</th><th>Template</th><th>Content</th><th>Status</th><th>Output</th><th>When</th><th></th></tr></thead>
             <tbody>
               {jobs.map((j) => (
                 <tr key={j.id}>
@@ -312,10 +336,25 @@ export function RenderQueue() {
                   </td>
                   <td>{j.output_media_id ? '#' + j.output_media_id : '—'}</td>
                   <td className="cp-muted">{fmtDate(j.created_at)}</td>
+                  <td>
+                    {j.status === 'rendering' ? (
+                      <ConfirmButton className="cp-btn small ghost" label="Force delete"
+                        confirmLabel="Rendering now - delete?" onConfirm={() => remove(j.id, true)} />
+                    ) : (
+                      <ConfirmButton className="cp-btn small ghost" label="Delete"
+                        confirmLabel="Really delete?" onConfirm={() => remove(j.id)} />
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        )}
+        {jobs && jobs.some((j) => j.status === 'done' || j.status === 'failed') && (
+          <p>
+            <ConfirmButton className="cp-btn small ghost" label="Clear finished"
+              confirmLabel="Delete every finished + failed job?" onConfirm={clearFinished} />
+          </p>
         )}
         <p className="cp-muted">
           Queued jobs are rendered on your PC: open PowerShell in the project and run
