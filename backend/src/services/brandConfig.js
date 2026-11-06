@@ -9,7 +9,7 @@ const DEFAULTS = {
     'Write like a real restaurant, not a marketing agency. Warm, direct, a little playful. ' +
     'No corporate filler, no excessive exclamation marks, no invented awards or claims.',
   posting_cadence: '',
-  auto_approve_threshold: '7.5',
+  auto_approve_threshold: 'off', // owner reviews every draft unless a number is set
   audience_location: 'Tbilisi, Georgia',
   audience_age: '18-40',
   audience_gender: 'all',

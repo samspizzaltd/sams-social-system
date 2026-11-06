@@ -503,7 +503,7 @@ export function SettingsSection({ view }) {
     const FIELDS = [
       { key: 'brand_voice', label: 'Brand voice', placeholder: 'Warm, direct, a little playful. No corporate filler.' },
       { key: 'posting_cadence', label: 'Posting cadence', placeholder: 'e.g. 2 posts/day, lunch + evening' },
-      { key: 'auto_approve_threshold', label: 'Auto-approve threshold (0-10)', placeholder: '7.5' },
+      { key: 'auto_approve_threshold', label: 'Auto-approve drafts at score (0-10), or "off" to review every draft yourself', placeholder: 'off' },
       { key: 'audience_location', label: 'Target audience - location', placeholder: 'Tbilisi, Georgia' },
       { key: 'audience_age', label: 'Target audience - age range', placeholder: '18-40' },
       { key: 'audience_gender', label: 'Target audience - gender (all / women / men)', placeholder: 'all' },

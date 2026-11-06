@@ -10,7 +10,7 @@ const router = express.Router();
 router.get('/content', async (req, res) => {
   const status = req.query.status || 'all';
   const map = {
-    pending: ['needs_review', 'pending_review', 'draft'],
+    pending: ['needs_review', 'pending_review', 'pending_manual', 'draft'],
     approved: ['approved', 'auto_approved'],
     rejected: ['rejected']
   };

@@ -16,14 +16,22 @@ class ApprovalWorkflow {
     return item.id;
   }
 
-  async autoReview(contentId) {
+  // threshold: number = auto-approve at or above it (the owner's panel
+  // setting); null = auto-approve OFF - every draft waits for the owner in
+  // the Approval Queue. The score is a crude heuristic, so OFF is the default.
+  async autoReview(contentId, threshold = null) {
     const item = this.queue.find(q => q.id === contentId);
     if (!item) return null;
 
     const score = this.calculateQualityScore(item.content);
     item.score = score;
 
-    if (score >= 7.5) {
+    if (threshold === null) {
+      item.status = 'needs_review';
+      return { status: 'needs_review', score };
+    }
+
+    if (score >= threshold) {
       item.status = 'auto_approved';
       this.approved.push(item);
       this.queue = this.queue.filter(q => q.id !== contentId);
@@ -32,7 +40,7 @@ class ApprovalWorkflow {
     if (score >= 5) {
       item.status = 'needs_review';
       item.feedback = `Flagged for manual review - quality score: ${score}`;
-      return { status: 'pending_manual', score };
+      return { status: 'needs_review', score };
     }
     item.status = 'rejected';
     item.feedback = `Quality below threshold (score: ${score})`;

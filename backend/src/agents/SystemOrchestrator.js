@@ -5,6 +5,7 @@ const { DataSyncAgent, PerformanceDashboard, EngagementAnalyzer } = require('./P
 const { PatternDetector, ABTestFramework, StrategyOptimizer } = require('./Phase6Optimization');
 const { EligibilityChecker, RevenueTracker, OpportunityAlert } = require('./Phase7Monetization');
 const cycleRepository = require('../database/cycleRepository');
+const brandConfig = require('../services/brandConfig');
 
 class SystemOrchestrator {
   constructor(claudeApiKey, ownerEmail) {
@@ -86,19 +87,24 @@ class SystemOrchestrator {
       };
 
       // ---- Phase 3: Production ----
+      // Auto-approve only when the owner set a numeric threshold in the panel;
+      // anything else ('off', empty) sends every draft to the Approval Queue.
+      const cfg = await brandConfig.get();
+      const t = parseFloat(cfg.auto_approve_threshold);
+      const threshold = Number.isFinite(t) ? t : null;
       for (const idea of ideas) {
         const caption = await this.contentCreator.generateCaption(idea.title);
         const script = await this.contentCreator.generateVideoScript(idea.title, 30);
         const draft = { title: idea.title, caption, script, platform: 'tiktok' };
         const reviewId = await this.approvalWorkflow.submitForReview(draft);
-        const review = await this.approvalWorkflow.autoReview(reviewId);
+        const review = await this.approvalWorkflow.autoReview(reviewId, threshold);
         produced.push({ draft, review });
       }
       cycle.phases.production = {
         status: 'completed',
         drafted: produced.length,
         approved: produced.filter(p => p.review.status === 'approved').length,
-        needsReview: produced.filter(p => p.review.status === 'pending_manual').length,
+        needsReview: produced.filter(p => p.review.status === 'needs_review').length,
         rejected: produced.filter(p => p.review.status === 'rejected').length,
         samples: produced.map(p => ({
           title: p.draft.title,
