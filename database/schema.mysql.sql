@@ -170,3 +170,34 @@ ALTER TABLE accounts DROP INDEX business_account_id;
 -- 2026-11-06: YouTube stores its resumable upload-session URL (~300+ chars)
 -- as creation_id; 64 chars would make the pre-upload save fail every time.
 ALTER TABLE publish_queue MODIFY creation_id VARCHAR(1024) NULL;
+
+-- 2026-11-06: Autopilot. The owner's library videos are prepared automatically
+-- (look at the video, write the captions, branded edit with a circulated sound)
+-- and staged in the publish queue as pending_review. One row per library video.
+-- Status: queued -> analyzing -> analyzed -> writing -> rendering -> staged
+--         (| failed | skipped). Nothing here publishes.
+CREATE TABLE IF NOT EXISTS media_prep (
+  media_id        INT PRIMARY KEY,
+  status          VARCHAR(20) NOT NULL DEFAULT 'queued',
+  analyze_job_id  INT NULL,
+  render_job_id   INT NULL,
+  output_media_id INT NULL,
+  own_sound_id    INT NULL,
+  sound_media_id  INT NULL,
+  sound_choice    VARCHAR(10) NULL,
+  analysis        TEXT NULL,
+  copy_json       TEXT NULL,
+  writer          VARCHAR(20) NULL,
+  error           TEXT NULL,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_prep_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Publish slots: epoch milliseconds (timezone-free) when an approved row may
+-- go out; NULL = as soon as possible. prep_media_id links autopilot rows back
+-- to the library video they were made from.
+ALTER TABLE publish_queue ADD COLUMN scheduled_at BIGINT NULL;
+ALTER TABLE publish_queue ADD COLUMN prep_media_id INT NULL;
+-- Sounds (kind 'sound') can be taken out of circulation by the owner.
+ALTER TABLE media ADD COLUMN circulate TINYINT(1) NOT NULL DEFAULT 1;

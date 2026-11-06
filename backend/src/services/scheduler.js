@@ -3,6 +3,7 @@ const brandConfig = require('./brandConfig');
 const metaPublish = require('./metaPublish');
 const tiktokPublish = require('./tiktokPublish');
 const youtubePublish = require('./youtubePublish');
+const autopilot = require('./autopilot');
 
 // Two background loops:
 //  1. Cycle scheduler - runs an autonomous cycle at the owner-configured
@@ -30,6 +31,7 @@ const COMMIT_ON_UPLOAD = ['tiktok', 'youtube'];
 // video, safe to retry) after it stays incomplete for this many polls (~2 min).
 const YT_INCOMPLETE_SETTLE_POLLS = 6;
 const STALE_PUBLISHING_MS = 10 * 60 * 1000;
+const MISSED_SLOT_MS = 2 * 3600 * 1000;
 
 function tbilisiNow() {
   const d = new Date(Date.now() + TBILISI_OFFSET_MS);
@@ -46,6 +48,7 @@ const state = {
   cycleTicks: 0,
   finisherTicks: 0,
   finisherBusy: false,
+  lastFinisherTickAt: null,
   lastError: null
 };
 
@@ -89,6 +92,8 @@ function startCycleScheduler(runCycle) {
   setInterval(async () => {
     state.cycleTicks++;
     try {
+      // Master switch first: while the system is OFF no cycle runs.
+      if (!(await autopilot.isOn())) return;
       const cfg = await brandConfig.get();
       if (String(cfg.auto_cycle_enabled).toLowerCase() !== 'true') return;
 
@@ -300,9 +305,11 @@ async function sweepStalePublishing() {
   );
 }
 
-function startPublishFinisher() {
-  setInterval(async () => {
+async function finisherTick() {
     state.finisherTicks++;
+    // Heartbeat before the busy check: a long upload keeps the tick busy, but
+    // the publisher is still alive and the dashboard must say so.
+    state.lastFinisherTickAt = Date.now();
     if (state.finisherBusy) return; // ticks must never overlap
     state.finisherBusy = true;
     try {
@@ -310,11 +317,42 @@ function startPublishFinisher() {
 
       const rows = await db.query(
         "SELECT q.*, m.url_path, m.filename FROM publish_queue q LEFT JOIN media m ON m.id = q.media_id " +
-        "WHERE q.status = 'approved_publishing' ORDER BY q.created_at ASC LIMIT 3"
+        "WHERE q.status = 'approved_publishing' ORDER BY q.created_at ASC LIMIT 50"
       );
       if (!rows || !rows.length) return;
 
-      for (const row of rows) {
+      // Master switch (owner request 2026-11-06). OFF: nothing new starts and
+      // no Instagram/Facebook container gets its final publish call. A TikTok
+      // or YouTube upload that already went out cannot be called back - those
+      // rows are still watched to the end so their outcome is recorded.
+      // ON: rows go out once their posting slot (scheduled_at) has come.
+      const on = await autopilot.isOn();
+      const now = Date.now();
+      if (on) {
+        // A slot missed by more than 2 h (system was OFF, server was down)
+        // moves to the next free slot - otherwise switching back ON would
+        // fire every overdue post at once and undo the spacing.
+        for (const r of rows) {
+          if (r.creation_id || !r.scheduled_at || Number(r.scheduled_at) >= now - MISSED_SLOT_MS) continue;
+          const next = await autopilot.nextFreeSlot(r.platform);
+          const moved = await db.query(
+            "UPDATE publish_queue SET scheduled_at = ? WHERE id = ? AND status = 'approved_publishing' AND creation_id IS NULL",
+            [next, r.id]
+          );
+          if (moved && moved.affectedRows) {
+            r.scheduled_at = next;
+            console.log('[scheduler] row #' + r.id + ' missed its slot - moved to ' + new Date(next).toISOString());
+          }
+        }
+      }
+      const due = rows.filter((r) => {
+        if (r.creation_id && COMMIT_ON_UPLOAD.includes(r.platform)) return true;
+        if (!on) return false;
+        if (r.creation_id) return true; // mid-publish container: finish it
+        return !r.scheduled_at || Number(r.scheduled_at) <= now;
+      }).slice(0, 3);
+
+      for (const row of due) {
         // Atomic claim: only the tick that flips the status works the row.
         // This also loses gracefully to a concurrent Drop (drop only acts on
         // approved_publishing, so whichever lands first wins outright).
@@ -338,7 +376,10 @@ function startPublishFinisher() {
     } finally {
       state.finisherBusy = false;
     }
-  }, 20 * 1000);
+}
+
+function startPublishFinisher() {
+  setInterval(finisherTick, 20 * 1000);
 }
 
 function status() {
@@ -346,6 +387,7 @@ function status() {
     cycleTicks: state.cycleTicks,
     finisherTicks: state.finisherTicks,
     lastCycleFire: state.lastCycleFire,
+    lastFinisherTickAt: state.lastFinisherTickAt,
     lastError: state.lastError
   };
 }
@@ -357,4 +399,4 @@ function start(runCycle) {
   console.log('[scheduler] cycle scheduler + publish finisher running');
 }
 
-module.exports = { start, status };
+module.exports = { start, status, _finisherTick: finisherTick };

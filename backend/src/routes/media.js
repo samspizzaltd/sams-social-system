@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const db = require('../database/db');
+const autopilot = require('../services/autopilot');
 
 const router = express.Router();
 
@@ -13,7 +14,7 @@ if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 let upload = null;
 try {
   const multer = require('multer');
-  const SAFE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.mov', '.webm']);
+  const SAFE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.mov', '.webm', '.m4a', '.mp3']);
   const storage = multer.diskStorage({
     destination: MEDIA_DIR,
     filename: (req, file, cb) => {
@@ -28,17 +29,19 @@ try {
     storage,
     limits: { fileSize: 60 * 1024 * 1024 }, // 60 MB
     fileFilter: (req, file, cb) => {
-      const ok = /^(image|video)\//.test(file.mimetype);
-      cb(ok ? null : new Error('Only image and video files are accepted'), ok);
+      // Audio is accepted for the Sound Library (sounds pulled out of videos).
+      const ok = /^(image|video|audio)\//.test(file.mimetype);
+      cb(ok ? null : new Error('Only image, video and audio files are accepted'), ok);
     }
   });
 } catch (err) {
   console.warn('[media] multer not installed - uploads disabled');
 }
 
-const KINDS = ['photo', 'video', 'rendered'];
+const KINDS = ['photo', 'video', 'rendered', 'sound'];
 
 function kindFromMime(mime) {
+  if (mime && mime.startsWith('audio/')) return 'sound';
   return mime && mime.startsWith('video/') ? 'video' : 'photo';
 }
 
@@ -47,7 +50,7 @@ router.get('/media', async (req, res) => {
   const kind = req.query.kind || 'all';
   let rows;
   if (kind === 'all' || !KINDS.includes(kind)) {
-    rows = await db.query('SELECT * FROM media ORDER BY created_at DESC LIMIT 300');
+    rows = await db.query('SELECT * FROM media ORDER BY created_at DESC LIMIT 1000');
   } else {
     rows = await db.query('SELECT * FROM media WHERE kind = ? ORDER BY created_at DESC LIMIT 300', [kind]);
   }
@@ -134,6 +137,9 @@ router.delete('/media/:id', async (req, res) => {
 
   const del = await db.query('DELETE FROM media WHERE id = ?', [req.params.id]);
   if (del === null) return res.status(503).json({ error: 'Database unavailable' });
+  // Its autopilot preparation (if any) goes with it.
+  await db.query('DELETE FROM media_prep WHERE media_id = ?', [req.params.id]);
+  autopilot.forgetFrames(req.params.id);
   if (rows[0].filename) {
     fs.unlink(path.join(MEDIA_DIR, rows[0].filename), () => {});
   }
@@ -175,6 +181,9 @@ router.post('/render-jobs', async (req, res) => {
 // GET /api/render-jobs?status=queued|rendering|done|failed|all
 router.get('/render-jobs', async (req, res) => {
   const status = req.query.status || 'all';
+  // Only the render worker on the owner's PC asks for the queued list - it
+  // doubles as the worker's heartbeat on the dashboard.
+  if (status === 'queued') autopilot.workerSeen();
   let rows;
   if (status === 'all') {
     rows = await db.query('SELECT * FROM render_jobs ORDER BY created_at DESC LIMIT 100');
@@ -212,6 +221,10 @@ router.post('/render-jobs/:id/status', async (req, res) => {
   );
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!rows.affectedRows) return res.status(404).json({ error: 'Job not found' });
+  // Autopilot jobs move their video's preparation forward (or mark it failed).
+  if (b.status === 'done' || b.status === 'failed') {
+    await autopilot.onJobStatus(req.params.id, b.status, b.output_media_id, b.error);
+  }
   res.json({ ok: true });
 });
 

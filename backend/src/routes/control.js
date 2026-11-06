@@ -115,7 +115,8 @@ const SETTING_KEYS = [
   'style_notes', 'music_notes',
   'auto_cycle_enabled', 'auto_cycle_times', 'auto_cycle_days',
   'platform_tiktok_enabled', 'platform_instagram_enabled',
-  'platform_facebook_enabled', 'platform_youtube_enabled'
+  'platform_facebook_enabled', 'platform_youtube_enabled',
+  'publish_slots', 'sound_mode', 'autoprep_buffer'
 ];
 const brandConfig = require('../services/brandConfig');
 

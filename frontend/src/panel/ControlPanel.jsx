@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import '../styles/ControlPanel.css';
-import { Overview, ContentSection, CyclesSection } from './sections/core';
+import { Overview, ContentSection, CyclesSection, AutopilotPill } from './sections/core';
 import {
   AnalyticsSection, GrowthSection, MonetizationSection,
   AgentsSection, SettingsSection
@@ -162,6 +162,7 @@ function ControlPanel({ user, onLogout }) {
             {activeCat ? activeCat.label : ''}
             {activeSub ? ` / ${activeSub.label}` : ''}
           </div>
+          <AutopilotPill onClick={() => select('dashboard', 'overview')} />
         </header>
         <div className="cp-content">{renderSection()}</div>
       </main>

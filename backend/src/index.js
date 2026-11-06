@@ -15,6 +15,8 @@ const publishQueueRoutes = require('./routes/publishQueue');
 const harvestRoutes = require('./routes/harvest');
 const tiktokRoutes = require('./routes/tiktok');
 const youtubeRoutes = require('./routes/youtube');
+const autopilotRoutes = require('./routes/autopilot');
+const autopilot = require('./services/autopilot');
 const scheduler = require('./services/scheduler');
 const brandConfig = require('./services/brandConfig');
 
@@ -25,7 +27,10 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ||
   'https://sams-social-system.vercel.app,http://localhost:5173,http://localhost:4173'
 ).split(',').map(o => o.trim());
 app.use(cors({ origin: ALLOWED_ORIGINS }));
-app.use(express.json());
+// The render worker's analysis report carries video frames and has its own
+// larger limit on its route (routes/autopilot.js) - parsed AFTER the JWT check.
+const jsonBody = express.json();
+app.use((req, res, next) => (req.path === '/api/prep/analysis' ? next() : jsonBody(req, res, next)));
 // Platform fetchers (Facebook, Instagram) read robots.txt before pulling a
 // video by URL; a missing one answered with an HTML 404 got read as
 // "restricted" (2026-10-14). Media must stay fetchable; the API need not be.
@@ -50,6 +55,7 @@ app.use('/api', publishQueueRoutes);
 app.use('/api', harvestRoutes);
 app.use('/api', tiktokRoutes.apiRouter);
 app.use('/api', youtubeRoutes.apiRouter);
+app.use('/api', autopilotRoutes);
 
 // Full system diagnostics (JWT-protected; public /health is deliberately slim)
 app.get('/api/system', (req, res) => {
@@ -178,6 +184,7 @@ const server = app.listen(port, '0.0.0.0', () => {
   db.init().catch(err => console.warn('[db] init failed: ' + err.message));
   claude.init();
   scheduler.start(runCycleGuarded);
+  autopilot.start();
 });
 
 server.on('error', (err) => {

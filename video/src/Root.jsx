@@ -3,6 +3,7 @@ import { Composition } from 'remotion';
 import { MenuCard } from './MenuCard.jsx';
 import { ScriptPromo } from './ScriptPromo.jsx';
 import { ReviewQuote } from './ReviewQuote.jsx';
+import { MagicCut } from './MagicCut.jsx';
 
 const FPS = 30;
 
@@ -50,6 +51,26 @@ export const Root = () => (
         image: 'sample.jpg',
         quote: 'Best shawarma in Tbilisi, hands down.',
         author: 'Google review'
+      }}
+    />
+    <Composition
+      id="MagicCut"
+      component={MagicCut}
+      durationInFrames={15 * FPS}
+      fps={FPS}
+      width={1080}
+      height={1920}
+      // The edit is as long as the owner's video (the worker measures it).
+      calculateMetadata={({ props }) => ({
+        durationInFrames: Math.max(3 * FPS, Number(props.durationInFrames) || 15 * FPS)
+      })}
+      defaultProps={{
+        video: 'jobs/demo.mp4',
+        sound: null,
+        hook: 'Watch this come out of the oven',
+        endLine: 'Come by tonight',
+        fit: 'cover',
+        durationInFrames: 15 * FPS
       }}
     />
   </>

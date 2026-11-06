@@ -18,7 +18,12 @@ const DEFAULTS = {
   music_notes: '',
   auto_cycle_enabled: 'false',
   auto_cycle_times: '09:30',
-  auto_cycle_days: 'all'
+  auto_cycle_days: 'all',
+  // Autopilot (2026-11-06). The master switch itself (system_enabled) is read
+  // by services/autopilot.js directly, never through this 60 s cache.
+  publish_slots: '12:30,19:00', // Tbilisi times; one post per platform per slot
+  sound_mode: 'rotate', // rotate = circulate the library's sounds; own = keep each video's sound
+  autoprep_buffer: '5' // prepared videos allowed to wait for review at once
 };
 
 let cache = null;

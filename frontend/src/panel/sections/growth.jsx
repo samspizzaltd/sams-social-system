@@ -552,7 +552,10 @@ export function SettingsSection({ view }) {
       { key: 'audience_notes', label: 'Audience notes', placeholder: 'e.g. students near the university, Gulf tourists in summer' },
       { key: 'auto_cycle_enabled', label: 'Auto-run cycles (true / false)', placeholder: 'false' },
       { key: 'auto_cycle_times', label: 'Auto-cycle times, Tbilisi (comma-separated HH:MM)', placeholder: '09:30' },
-      { key: 'auto_cycle_days', label: 'Auto-cycle days (all, or e.g. Sun,Mon)', placeholder: 'all' }
+      { key: 'auto_cycle_days', label: 'Auto-cycle days (all, or e.g. Sun,Mon)', placeholder: 'all' },
+      { key: 'publish_slots', label: 'Posting slots, Tbilisi (comma-separated HH:MM - one post per platform per slot)', placeholder: '12:30,19:00' },
+      { key: 'sound_mode', label: 'Sounds on autopilot edits (rotate = circulate the Sound Library, own = keep the sound each video came with)', placeholder: 'rotate' },
+      { key: 'autoprep_buffer', label: 'Prepared videos allowed to wait for your review at once', placeholder: '5' }
     ];
     return (
       <div className="cp-card cp-form-card">

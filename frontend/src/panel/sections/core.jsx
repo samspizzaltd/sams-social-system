@@ -62,6 +62,159 @@ const fmtDate = (d) => {
   return Number.isNaN(t.getTime()) ? String(d) : t.toLocaleString();
 };
 
+// ---------- Autopilot master switch ----------
+
+export const PLATFORM_NAME = { instagram: 'Instagram', facebook_page: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube' };
+
+// Epoch ms -> "Fri 19:00" in the viewer's clock (the owner is in Tbilisi).
+export const fmtSlot = (ms) => {
+  if (!ms) return 'as soon as possible';
+  const d = new Date(Number(ms));
+  return d.toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+};
+
+const ago = (s) => (s === null || s === undefined ? null
+  : s < 90 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago');
+
+// Small always-visible indicator for the top bar.
+export function AutopilotPill({ onClick }) {
+  const [on, setOn] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.get('/api/autopilot')
+      .then((r) => { if (alive) setOn(!!r.data.enabled); })
+      .catch(() => { if (alive) setOn(null); });
+    load();
+    const t = setInterval(load, 30000);
+    window.addEventListener('autopilot-changed', load);
+    return () => { alive = false; clearInterval(t); window.removeEventListener('autopilot-changed', load); };
+  }, []);
+  return (
+    <button type="button" className={'cp-ap-pill ' + (on ? 'on' : 'off')} onClick={onClick}
+      title="Open the Dashboard to switch the system on or off">
+      <span className="dot" />
+      {on === null ? 'System: unknown' : on ? 'System ON · publishing' : 'System OFF'}
+    </button>
+  );
+}
+
+function ApStep({ n, label, onClick }) {
+  const body = (<><b>{n === null || n === undefined ? '—' : n}</b><span>{label}</span></>);
+  return onClick
+    ? <button type="button" className="cp-ap-step link" onClick={onClick}>{body}</button>
+    : <div className="cp-ap-step">{body}</div>;
+}
+
+// The big ON/OFF switch on the Dashboard, with what the system is doing.
+export function AutopilotCard({ goTo }) {
+  const [ap, setAp] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api.get('/api/autopilot')
+      .then((r) => { setAp(r.data); setError(null); })
+      .catch((e) => setError(e.response?.data?.error || e.message));
+  }, []);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 20000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const toggle = async () => {
+    if (!ap) return;
+    setBusy(true); setError(null);
+    try {
+      const r = await api.put('/api/autopilot', { enabled: !ap.enabled });
+      setAp(r.data);
+      window.dispatchEvent(new Event('autopilot-changed'));
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!ap) {
+    return (
+      <div className="cp-card cp-ap-card off">
+        {error ? <ErrorBox error={'Could not read the system switch: ' + error} /> : <Loading />}
+      </div>
+    );
+  }
+
+  const c = ap.counts || {};
+  const on = !!ap.enabled;
+  const slots = (ap.settings && ap.settings.publish_slots ? ap.settings.publish_slots : []).join(' and ');
+  const publisherOk = ap.publisher_last_tick_s !== null && ap.publisher_last_tick_s < 120;
+  const workerSeen = ago(ap.worker_last_seen_s);
+  const workerOk = ap.worker_last_seen_s !== null && ap.worker_last_seen_s < 180;
+  const preparing = (c.preparing || 0) + (c.analysed_waiting || 0);
+
+  return (
+    <div className={'cp-card cp-ap-card ' + (on ? 'on' : 'off')}>
+      <div className="cp-ap-head">
+        <button type="button" className={'cp-switch' + (on ? ' on' : '')} onClick={toggle} disabled={busy}
+          aria-pressed={on} aria-label="Switch the system on or off">
+          <span className="cp-switch-label">{on ? 'ON' : 'OFF'}</span>
+        </button>
+        <div>
+          <div className="cp-ap-state">
+            {on ? 'System is ON - active and publishing' : 'System is OFF - nothing is being published'}
+          </div>
+          <div className="cp-ap-sub">
+            {on
+              ? 'Your library videos are being prepared (captions written from the video, branded edit, sounds circulated) and land in the Publish Queue for your approval. Approved posts go out at ' + (slots || 'the posting slots') + ' Tbilisi time.'
+              : 'Nothing new is prepared and nothing goes out. Posts you approve wait in the queue until you switch it on. (An upload that already started finishes - TikTok and YouTube cannot call one back.)'}
+          </div>
+        </div>
+      </div>
+      <ErrorBox error={error} />
+
+      <div className="cp-ap-steps">
+        <ApStep n={c.library_waiting} label="new videos in the library" onClick={() => goTo('media', 'library')} />
+        <ApStep n={preparing} label="being prepared" onClick={() => goTo('media', 'library')} />
+        <ApStep n={c.awaiting_review} label="waiting for your approval" onClick={() => goTo('media', 'publish')} />
+        <ApStep n={c.scheduled} label={ap.next_up ? 'scheduled - next ' + fmtSlot(ap.next_up.scheduled_at) : 'scheduled to publish'} onClick={() => goTo('media', 'publish')} />
+        <ApStep n={c.published_24h} label="published in the last 24 h" />
+      </div>
+
+      <div className="cp-ap-health">
+        <span className={'cp-pill ' + (publisherOk ? 'ok' : 'err')}>
+          Publisher {publisherOk ? 'running' : 'not running'}
+        </span>
+        <span className={'cp-pill ' + (workerOk ? 'ok' : 'warn')}>
+          Video worker on your PC: {workerSeen ? 'seen ' + workerSeen : 'not seen since the server restarted'}
+        </span>
+        <span className={'cp-pill ' + (ap.claude ? 'ok' : 'warn')}>
+          Captions: {ap.claude ? 'written by Claude' : 'templates (Claude offline)'}
+        </span>
+        <span className={'cp-pill ' + ((ap.connected || []).length ? 'ok' : 'err')}>
+          Posting to: {(ap.connected || []).length ? ap.connected.map((p) => PLATFORM_NAME[p] || p).join(', ') : 'nothing connected'}
+        </span>
+        <span className="cp-pill ok">Sounds in circulation: {c.sounds_circulating === null ? '—' : c.sounds_circulating}</span>
+      </div>
+
+      {on && !workerOk && (c.library_waiting > 0 || preparing > 0) && (
+        <p className="cp-muted" style={{ marginTop: 10 }}>
+          New videos are prepared by the video worker on your PC - start it to let them through:
+          <code> cd D:\Projects\sams-social-system\video &amp;&amp; node render-worker.mjs --watch</code>
+        </p>
+      )}
+      {ap.activity && (
+        <p className="cp-muted" style={{ marginTop: 8 }}>Latest: {ap.activity.text} ({fmtDate(ap.activity.at)})</p>
+      )}
+      {c.failed > 0 && (
+        <p className="cp-muted" style={{ marginTop: 4 }}>
+          {c.failed} video{c.failed === 1 ? '' : 's'} could not be prepared - see Media Library for the reason and "Prepare again".
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ---------- Dashboard / Overview ----------
 
 export function Overview({ goTo }) {
@@ -84,12 +237,13 @@ export function Overview({ goTo }) {
       .catch(() => setRealPublished(null));
   }, []);
 
-  if (error) return <ErrorBox error={error} />;
-  if (!data || !health) return <Loading />;
+  if (error) return <div><AutopilotCard goTo={goTo} /><ErrorBox error={error} /></div>;
+  if (!data || !health) return <div><AutopilotCard goTo={goTo} /><Loading /></div>;
 
   const h = data.history;
   return (
     <div>
+      <AutopilotCard goTo={goTo} />
       <div className="cp-stat-row">
         <Stat label="Cycles completed" value={h ? fmt(h.cyclesCompleted) : '—'} />
         <Stat label="REAL posts published" value={realPublished === null ? '—' : fmt(realPublished)}

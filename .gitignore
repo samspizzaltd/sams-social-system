@@ -21,3 +21,4 @@ video/node_modules/
 video/out/
 video/public/jobs/
 video/.env
+prep-frames/

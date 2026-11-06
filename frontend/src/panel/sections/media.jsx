@@ -15,6 +15,72 @@ const fmtSize = (b) => {
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
+// Autopilot preparation states, in owner words.
+const PREP_LABEL = {
+  queued: ['warn', 'waiting for the video worker on your PC'],
+  analyzing: ['warn', 'being analysed on your PC'],
+  analyzed: ['warn', 'analysed - waiting its turn'],
+  writing: ['warn', 'writing the captions'],
+  rendering: ['warn', 'making the branded edit'],
+  staged: ['ok', 'ready - in the Publish Queue'],
+  failed: ['err', 'could not be prepared'],
+  skipped: ['err', 'skipped - will not be posted']
+};
+
+// The sounds pulled out of the library videos (plus any the owner uploads).
+// The autopilot circulates them across edits - least-used first.
+function SoundLibrary({ sounds, preps, onChanged, setError }) {
+  const uses = {};
+  for (const p of Object.values(preps)) {
+    if (p.sound_choice === 'rotated' && p.sound_media_id && !['failed', 'skipped'].includes(p.status)) {
+      uses[p.sound_media_id] = (uses[p.sound_media_id] || 0) + 1;
+    }
+  }
+  const toggle = async (m) => {
+    try {
+      await api.put(`/api/media/${m.id}/circulate`, { on: !Number(m.circulate) });
+      onChanged();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    }
+  };
+  return (
+    <div className="cp-card">
+      <h3>Sound Library</h3>
+      <p className="cp-muted">
+        Every sound from your videos lands here and goes around: each new edit gets the least-used sound,
+        never the same one twice in a row, so your sounds keep coming back on other videos. You can also drop your
+        own music files (mp3) into the upload box above. Keep in circulation only sounds you own or that are
+        royalty-free - Facebook and YouTube mute or block videos that carry copyrighted songs.
+      </p>
+      {sounds.length === 0 ? (
+        <p className="cp-muted">No sounds yet - they appear as the autopilot analyses your videos.</p>
+      ) : (
+        <div className="cp-table-scroll">
+        <table className="cp-table">
+          <thead><tr><th>Sound</th><th>Listen</th><th>Used in edits</th><th>Circulation</th><th></th></tr></thead>
+          <tbody>
+            {sounds.map((m) => (
+              <tr key={m.id}>
+                <td>#{m.id} {m.title || 'sound'}</td>
+                <td>{m.url_path ? <audio controls preload="none" src={API_BASE + m.url_path} style={{ height: 30 }} /> : '—'}</td>
+                <td>{uses[m.id] || 0}</td>
+                <td>
+                  <button className={'cp-btn small' + (Number(m.circulate) ? '' : ' ghost')} onClick={() => toggle(m)}>
+                    {Number(m.circulate) ? 'In circulation' : 'Out of circulation'}
+                  </button>
+                </td>
+                <td className="cp-muted">{fmtDate(m.created_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Media Library ----------
 
 export function MediaLibrary() {
@@ -25,11 +91,34 @@ export function MediaLibrary() {
   const [localPath, setLocalPath] = useState('');
   const [pathTitle, setPathTitle] = useState('');
 
+  const [preps, setPreps] = useState({});
+  const [handStaged, setHandStaged] = useState([]); // videos in the queue without the autopilot
   const load = useCallback(() => {
     api.get('/api/media')
       .then((r) => setMedia(r.data.media))
       .catch((e) => setError(e.response?.data?.error || e.message));
+    api.get('/api/prep')
+      .then((r) => {
+        const map = {};
+        for (const p of r.data.preps || []) map[p.media_id] = p;
+        setPreps(map);
+        setHandStaged(r.data.hand_staged || []);
+      })
+      .catch(() => {});
   }, []);
+
+  const prepAction = async (id, action, body) => {
+    setError(null); setNotice(null);
+    try {
+      await api.post(`/api/prep/${id}/${action}`, body || {});
+      setNotice(action === 'skip'
+        ? 'Video #' + id + ' will not be posted by the autopilot.'
+        : 'Video #' + id + ' is being prepared - it lands in the Publish Queue when ready (the system must be ON and the video worker on your PC running).');
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    }
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -40,11 +129,11 @@ export function MediaLibrary() {
   // them one by one - the server takes a single file per request.
   const uploadFiles = async (fileList) => {
     const files = Array.from(fileList || []).filter(
-      (f) => /^(image|video)\//.test(f.type) || /\.(jpe?g|png|webp|gif|mp4|mov|webm)$/i.test(f.name)
+      (f) => /^(image|video|audio)\//.test(f.type) || /\.(jpe?g|png|webp|gif|mp4|mov|webm|mp3|m4a)$/i.test(f.name)
     );
     const skipped = (fileList ? fileList.length : 0) - files.length;
     if (!files.length) {
-      setError('No usable files - drop photos (jpg, png, webp, gif) or videos (mp4, mov, webm).');
+      setError('No usable files - drop photos (jpg, png, webp, gif), videos (mp4, mov, webm) or sounds (mp3, m4a).');
       return;
     }
     setError(null); setNotice(null); setUploading(true);
@@ -69,7 +158,7 @@ export function MediaLibrary() {
       setError('Uploaded ' + done + ' of ' + files.length + '. Failed - ' + failures.join(' | '));
     } else {
       setNotice('Uploaded ' + done + (done === 1 ? ' file' : ' files') +
-        (skipped > 0 ? ' (' + skipped + ' skipped - not a photo/video)' : ''));
+        (skipped > 0 ? ' (' + skipped + ' skipped - not a photo, video or sound)' : ''));
     }
     load();
   };
@@ -125,7 +214,7 @@ export function MediaLibrary() {
               <span>{dragOver ? 'Drop them here' : 'Drag & drop files here (one or many)'}</span>
             )}
           </div>
-          <input type="file" accept="image/*,video/*" multiple onChange={onUpload} disabled={uploading} />
+          <input type="file" accept="image/*,video/*,audio/*" multiple onChange={onUpload} disabled={uploading} />
         </div>
 
         <div className="cp-card">
@@ -149,13 +238,18 @@ export function MediaLibrary() {
 
       <div className="cp-card">
         <h3>Library</h3>
-        {media === null ? <Loading /> : media.length === 0 ? (
+        <p className="cp-muted">
+          While the system is ON, every video here is prepared automatically - captions written from the video
+          itself, a branded edit with a circulated sound - and lands in the Publish Queue for your approval.
+        </p>
+        {media === null ? <Loading /> : media.filter((m) => m.kind !== 'sound').length === 0 ? (
           <p className="cp-muted">No media yet. Upload a photo above, or register a file path.</p>
         ) : (
+          <div className="cp-table-scroll">
           <table className="cp-table">
-            <thead><tr><th>Preview</th><th>Title</th><th>Kind</th><th>Where</th><th>Added</th><th></th></tr></thead>
+            <thead><tr><th>Preview</th><th>Title</th><th>Kind</th><th>Where</th><th>Autopilot</th><th>Added</th><th></th></tr></thead>
             <tbody>
-              {media.map((m) => (
+              {media.filter((m) => m.kind !== 'sound').map((m) => (
                 <tr key={m.id}>
                   <td>
                     {m.url_path && m.kind === 'photo' ? (
@@ -169,14 +263,50 @@ export function MediaLibrary() {
                   <td>#{m.id} {m.title || '—'}</td>
                   <td><span className={`cp-pill ${m.kind === 'rendered' ? 'ok' : 'warn'}`}>{m.kind}</span></td>
                   <td className="cp-muted">{m.url_path ? 'server ' + (fmtSize(m.size_bytes) || '') : m.local_path}</td>
+                  <td>
+                    {m.kind !== 'video' ? <span className="cp-muted">—</span> : (() => {
+                      const p = preps[m.id];
+                      const byHand = !p && handStaged.includes(Number(m.id));
+                      const [pill, text] = p ? (PREP_LABEL[p.status] || ['warn', p.status])
+                        : byHand ? ['ok', 'in the Publish Queue as you staged it'] : ['warn', 'new - will be prepared'];
+                      const canRedo = p && ['staged', 'failed', 'skipped', 'analyzed', 'queued'].includes(p.status);
+                      return (
+                        <div>
+                          <span className={'cp-pill ' + pill}>{text}</span>
+                          {p && p.error ? <div className="cp-muted" style={{ fontSize: 12, marginTop: 4 }}>{String(p.error).slice(0, 220)}</div> : null}
+                          <div className="cp-content-actions" style={{ marginTop: 4 }}>
+                            {byHand && (
+                              <ConfirmButton className="cp-btn small ghost" label="✨ Add the magic"
+                                confirmLabel="Replace your waiting posts?"
+                                onConfirm={() => prepAction(m.id, 'again')} />
+                            )}
+                            {canRedo && (
+                              <ConfirmButton className="cp-btn small ghost" label="Prepare again"
+                                confirmLabel={p.status === 'staged' ? 'Replace its waiting posts?' : 'Prepare again?'}
+                                onConfirm={() => prepAction(m.id, 'again')} />
+                            )}
+                            {!byHand && (!p || p.status !== 'skipped') && (
+                              <ConfirmButton className="cp-btn small ghost" label="Don't post"
+                                confirmLabel="Skip this video?" onConfirm={() => prepAction(m.id, 'skip')} />
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </td>
                   <td className="cp-muted">{fmtDate(m.created_at)}</td>
                   <td><ConfirmButton className="cp-btn small ghost" label="Remove" confirmLabel="Really remove?" onConfirm={() => remove(m.id)} /></td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
+
+      {media !== null && (
+        <SoundLibrary sounds={media.filter((m) => m.kind === 'sound')} preps={preps} onChanged={load} setError={setError} />
+      )}
     </div>
   );
 }
@@ -305,7 +435,7 @@ export function RenderQueue() {
             <p className="cp-muted">The library is empty - add photos or videos first.</p>
           ) : (
             <div className="cp-media-pick">
-              {media.filter((m) => m.kind !== 'rendered').map((m) => (
+              {media.filter((m) => m.kind !== 'rendered' && m.kind !== 'sound').map((m) => (
                 <label key={m.id} className={`cp-media-chip ${form.media_ids.includes(m.id) ? 'active' : ''}`}>
                   <input type="checkbox" checked={form.media_ids.includes(m.id)} onChange={() => toggleMedia(m.id)} />
                   #{m.id} {m.title || m.kind}{m.local_path ? ' (on PC)' : ''}

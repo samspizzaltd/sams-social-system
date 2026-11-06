@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../database/db');
 const tiktokPublish = require('../services/tiktokPublish');
 const youtubePublish = require('../services/youtubePublish');
+const autopilot = require('../services/autopilot');
 
 // The publish review queue: the ONLY path content takes to the real accounts.
 // Staging is harmless; a row goes public only after the owner clicks Approve
@@ -53,7 +54,9 @@ router.get('/publish-queue', async (req, res) => {
   const base =
     'SELECT q.*, m.url_path, m.title AS media_title FROM publish_queue q LEFT JOIN media m ON m.id = q.media_id';
   if (status === 'all') {
-    rows = await db.query(base + ' ORDER BY q.created_at DESC LIMIT 100');
+    // Everything still in play first, then history - a long history must
+    // never push a post that waits for the owner off the list.
+    rows = await db.query(base + " ORDER BY (q.status IN ('pending_review','failed','unknown','approved_publishing','publishing')) DESC, q.created_at DESC LIMIT 300");
   } else {
     rows = await db.query(base + ' WHERE q.status = ? ORDER BY q.created_at ASC LIMIT 100', [status]);
   }
@@ -65,9 +68,18 @@ router.get('/publish-queue', async (req, res) => {
 // For TikTok rows the body must carry the posting options the owner picked in
 // the approve sheet (TikTok UX requirement: explicit privacy level per post).
 router.post('/publish-queue/:id/approve', async (req, res) => {
-  const row = await db.query('SELECT platform FROM publish_queue WHERE id = ?', [req.params.id]);
+  const row = await db.query('SELECT platform, prep_media_id FROM publish_queue WHERE id = ?', [req.params.id]);
   if (row === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!row.length) return res.status(404).json({ error: 'Not found' });
+
+  // When: 'slot' = the next free posting slot for this platform (default for
+  // autopilot rows, so a batch of approvals is spread out instead of firing at
+  // once); 'now' = as soon as the publisher runs (default for hand-staged rows).
+  const whenAsked = req.body && req.body.when;
+  if (whenAsked !== undefined && whenAsked !== 'now' && whenAsked !== 'slot') {
+    return res.status(400).json({ error: 'when must be "now" or "slot"' });
+  }
+  const when = whenAsked || (row[0].prep_media_id ? 'slot' : 'now');
 
   let postOptions = null;
   if (row[0].platform === 'tiktok') {
@@ -102,13 +114,56 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
     postOptions = JSON.stringify({ title, privacy_status: b.privacy_status });
   }
 
+  const scheduledAt = when === 'slot' ? await autopilot.nextFreeSlot(row[0].platform) : null;
   const rows = await db.query(
-    "UPDATE publish_queue SET status = 'approved_publishing', error = NULL, attempts = 0, creation_id = NULL, post_options = ? WHERE id = ? AND status IN ('pending_review','failed')",
-    [postOptions, req.params.id]
+    "UPDATE publish_queue SET status = 'approved_publishing', error = NULL, attempts = 0, creation_id = NULL, post_options = ?, scheduled_at = ? WHERE id = ? AND status IN ('pending_review','failed')",
+    [postOptions, scheduledAt, req.params.id]
   );
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!rows.affectedRows) return res.status(409).json({ error: 'Not in an approvable state' });
-  res.json({ ok: true, status: 'approved_publishing', note: 'Publishing runs in the background - watch this row for the permalink' });
+  const on = await autopilot.isOn();
+  res.json({
+    ok: true,
+    status: 'approved_publishing',
+    scheduled_at: scheduledAt,
+    system_on: on,
+    note: !on
+      ? 'Approved. The system is switched OFF, so it waits - switch it ON on the Dashboard to let it publish.'
+      : scheduledAt
+        ? 'Approved for the next posting slot.'
+        : 'Publishing runs in the background - watch this row for the permalink'
+  });
+});
+
+// POST /api/publish-queue/:id/now - an approved row waiting for its slot goes
+// out as soon as the publisher runs (still only while the system is ON).
+router.post('/publish-queue/:id/now', async (req, res) => {
+  const rows = await db.query(
+    "UPDATE publish_queue SET scheduled_at = NULL WHERE id = ? AND status = 'approved_publishing' AND creation_id IS NULL",
+    [req.params.id]
+  );
+  if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (!rows.affectedRows) return res.status(409).json({ error: 'This row is not waiting for a slot any more - reload' });
+  res.json({ ok: true });
+});
+
+// PUT /api/publish-queue/:id/caption {caption} - edit before approving.
+router.put('/publish-queue/:id/caption', async (req, res) => {
+  const caption = String((req.body && req.body.caption) || '');
+  if (!caption.trim()) return res.status(400).json({ error: 'caption required' });
+  const info = await db.query('SELECT platform FROM publish_queue WHERE id = ?', [req.params.id]);
+  if (info === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (!info.length) return res.status(404).json({ error: 'Not found' });
+  if (caption.length > CAPTION_LIMIT[info[0].platform]) {
+    return res.status(400).json({ error: 'Too long for this platform (max ' + CAPTION_LIMIT[info[0].platform] + ' characters)' });
+  }
+  const rows = await db.query(
+    "UPDATE publish_queue SET caption = ? WHERE id = ? AND status IN ('pending_review','failed')",
+    [caption, req.params.id]
+  );
+  if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (!rows.affectedRows) return res.status(409).json({ error: 'Only posts waiting for review can be edited' });
+  res.json({ ok: true });
 });
 
 // POST /api/publish-queue/:id/drop
