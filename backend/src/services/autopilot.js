@@ -130,17 +130,23 @@ async function nextFreeSlot(platform) {
 
 // ---------- step 1: queue analysis of new library videos ----------
 
-// Eligible = a library video never staged in the publish queue in any form.
-// A video the owner staged by hand (or a harvested repost, even one he
-// dropped) is his decision and is left alone unless he asks for the magic.
+// Eligible (owner, 2026-11-06: "add your magic when publishing them"):
+//  - a library video never staged, or
+//  - one whose posts are only WAITING (pending_review / failed) - hand-staged
+//    or harvested; its magic version replaces those waiting posts.
+// Left alone unless the owner asks ("Add the magic" in the Library):
+//  - anything already posted or on its way on any platform (no double posts),
+//  - a video the owner dropped completely.
+const ELIGIBLE_SQL =
+  "FROM media m LEFT JOIN media_prep p ON p.media_id = m.id" +
+  " WHERE m.kind = 'video' AND (m.url_path IS NOT NULL OR m.local_path IS NOT NULL) AND p.media_id IS NULL" +
+  " AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.media_id = m.id" +
+  "   AND q.status IN ('approved_publishing','publishing','published','unknown'))" +
+  " AND (NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.media_id = m.id)" +
+  "   OR EXISTS (SELECT 1 FROM publish_queue q WHERE q.media_id = m.id AND q.status IN ('pending_review','failed')))";
 
 async function queueNewVideos() {
-  const fresh = await db.query(
-    "SELECT m.id FROM media m LEFT JOIN media_prep p ON p.media_id = m.id" +
-    " WHERE m.kind = 'video' AND (m.url_path IS NOT NULL OR m.local_path IS NOT NULL) AND p.media_id IS NULL" +
-    " AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.media_id = m.id)" +
-    " ORDER BY m.id ASC LIMIT 10"
-  );
+  const fresh = await db.query('SELECT m.id ' + ELIGIBLE_SQL + ' ORDER BY m.id ASC LIMIT 10');
   for (const row of fresh || []) {
     await db.query("INSERT IGNORE INTO media_prep (media_id, status) VALUES (?, 'queued')", [row.id]);
   }
@@ -455,8 +461,17 @@ async function connectedPlatforms() {
 async function stage(prep, outputMediaId) {
   const copy = JSON.parse(prep.copy_json || '{}');
   const platforms = await connectedPlatforms();
+  // A platform where the owner already approved (or posted) the raw version
+  // of this video meanwhile gets no second copy.
+  const taken = await db.query(
+    "SELECT DISTINCT platform FROM publish_queue WHERE media_id = ? AND prep_media_id IS NULL" +
+    " AND status IN ('approved_publishing','publishing','published','unknown')",
+    [prep.media_id]
+  );
+  const takenSet = new Set((taken || []).map((r) => r.platform));
   const staged = [];
   for (const platform of platforms) {
+    if (takenSet.has(platform)) continue;
     const caption = platform === 'youtube' ? copy.youtube_description : copy[platform];
     if (!caption) continue;
     const opts = platform === 'youtube' ? JSON.stringify({ title: copy.youtube_title }) : null;
@@ -465,6 +480,14 @@ async function stage(prep, outputMediaId) {
       [platform, outputMediaId, String(caption).slice(0, CAPTION_LIMIT[platform]), opts, prep.media_id]
     );
     if (r && r.insertId) staged.push(platform);
+  }
+  if (staged.length) {
+    // The raw version's waiting posts (hand-staged or harvested) give way.
+    await db.query(
+      "UPDATE publish_queue SET status = 'dropped', error = 'replaced by the autopilot version'" +
+      " WHERE media_id = ? AND prep_media_id IS NULL AND status IN ('pending_review','failed')",
+      [prep.media_id]
+    );
   }
   const err = platforms.length ? null : 'No platform is connected - connect one in Settings → Platform Connections, then press "Prepare again"';
   await db.query('UPDATE media_prep SET error = ? WHERE media_id = ?', [err, prep.media_id]);
@@ -526,12 +549,8 @@ async function prepareAgain(mediaId, sound) {
     if (!m || !m.length) return { status: 404, error: 'Not a library video' };
     const ins = await db.query("INSERT IGNORE INTO media_prep (media_id, status, sound_choice) VALUES (?, 'queued', ?)", [mediaId, choice]);
     if (ins === null) return { status: 503, error: 'Database unavailable' };
-    // The owner handed this video to the autopilot: its raw, hand-staged posts
-    // still waiting for review give way to the prepared version.
-    await db.query(
-      "UPDATE publish_queue SET status = 'dropped', error = 'replaced by the autopilot version' WHERE media_id = ? AND prep_media_id IS NULL AND status = 'pending_review'",
-      [mediaId]
-    );
+    // Its raw waiting posts stay until the prepared version is ready - then
+    // stage() replaces them.
     return { status: 200, body: { ok: true, status: 'queued' } };
   }
   const p = rows[0];
@@ -649,11 +668,7 @@ async function status(schedulerStatus) {
       autoprep_buffer: Number(cfg.autoprep_buffer) || 5
     },
     counts: {
-      library_waiting: await count(
-        "SELECT COUNT(*) AS n FROM media m LEFT JOIN media_prep p ON p.media_id = m.id" +
-        " WHERE m.kind = 'video' AND (m.url_path IS NOT NULL OR m.local_path IS NOT NULL) AND p.media_id IS NULL" +
-        " AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.media_id = m.id)"
-      ),
+      library_waiting: await count('SELECT COUNT(*) AS n ' + ELIGIBLE_SQL),
       analysed_waiting: await count("SELECT COUNT(*) AS n FROM media_prep WHERE status = 'analyzed'"),
       preparing: await count("SELECT COUNT(*) AS n FROM media_prep WHERE status IN ('queued','analyzing','writing','rendering')"),
       failed: await count("SELECT COUNT(*) AS n FROM media_prep WHERE status = 'failed'"),
@@ -675,10 +690,19 @@ async function status(schedulerStatus) {
 // (staged by hand or harvested) - the Library offers "Add the magic" on them.
 async function handStaged() {
   const rows = await db.query(
-    "SELECT DISTINCT q.media_id FROM publish_queue q JOIN media m ON m.id = q.media_id" +
-    " LEFT JOIN media_prep p ON p.media_id = q.media_id WHERE m.kind = 'video' AND p.media_id IS NULL"
+    "SELECT q.media_id," +
+    " MAX(q.status IN ('approved_publishing','publishing','published','unknown')) AS out_or_going," +
+    " MAX(q.status IN ('pending_review','failed')) AS waiting" +
+    " FROM publish_queue q JOIN media m ON m.id = q.media_id LEFT JOIN media_prep p ON p.media_id = q.media_id" +
+    " WHERE m.kind = 'video' AND p.media_id IS NULL GROUP BY q.media_id"
   );
-  return rows ? rows.map((r) => Number(r.media_id)) : [];
+  const posted = [];
+  const dropped = [];
+  for (const r of rows || []) {
+    if (Number(r.out_or_going)) posted.push(Number(r.media_id));
+    else if (!Number(r.waiting)) dropped.push(Number(r.media_id));
+  }
+  return { posted, dropped };
 }
 
 async function listPreps() {

@@ -30,7 +30,9 @@ router.put('/autopilot', async (req, res) => {
 router.get('/prep', async (req, res) => {
   const rows = await autopilot.listPreps();
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
-  res.json({ preps: rows, hand_staged: await autopilot.handStaged() });
+  const left = await autopilot.handStaged();
+  // Videos the autopilot leaves alone: already posted / on their way, or dropped.
+  res.json({ preps: rows, left_alone: left });
 });
 
 // POST /api/prep/analysis - the render worker reports what it measured.

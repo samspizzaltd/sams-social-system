@@ -92,7 +92,8 @@ export function MediaLibrary() {
   const [pathTitle, setPathTitle] = useState('');
 
   const [preps, setPreps] = useState({});
-  const [handStaged, setHandStaged] = useState([]); // videos in the queue without the autopilot
+  // Videos the autopilot leaves alone: already posted / on their way, or dropped.
+  const [leftAlone, setLeftAlone] = useState({ posted: [], dropped: [] });
   const load = useCallback(() => {
     api.get('/api/media')
       .then((r) => setMedia(r.data.media))
@@ -102,7 +103,7 @@ export function MediaLibrary() {
         const map = {};
         for (const p of r.data.preps || []) map[p.media_id] = p;
         setPreps(map);
-        setHandStaged(r.data.hand_staged || []);
+        setLeftAlone(r.data.left_alone || { posted: [], dropped: [] });
       })
       .catch(() => {});
   }, []);
@@ -266,9 +267,13 @@ export function MediaLibrary() {
                   <td>
                     {m.kind !== 'video' ? <span className="cp-muted">—</span> : (() => {
                       const p = preps[m.id];
-                      const byHand = !p && handStaged.includes(Number(m.id));
+                      const posted = !p && (leftAlone.posted || []).includes(Number(m.id));
+                      const dropped = !p && (leftAlone.dropped || []).includes(Number(m.id));
+                      const byHand = posted || dropped;
                       const [pill, text] = p ? (PREP_LABEL[p.status] || ['warn', p.status])
-                        : byHand ? ['ok', 'in the Publish Queue as you staged it'] : ['warn', 'new - will be prepared'];
+                        : posted ? ['ok', 'already posted - left alone']
+                          : dropped ? ['err', 'dropped from the queue - left alone']
+                            : ['warn', 'new - will be prepared'];
                       const canRedo = p && ['staged', 'failed', 'skipped', 'analyzed', 'queued'].includes(p.status);
                       return (
                         <div>
@@ -277,7 +282,7 @@ export function MediaLibrary() {
                           <div className="cp-content-actions" style={{ marginTop: 4 }}>
                             {byHand && (
                               <ConfirmButton className="cp-btn small ghost" label="✨ Add the magic"
-                                confirmLabel="Replace your waiting posts?"
+                                confirmLabel="Make a new version?"
                                 onConfirm={() => prepAction(m.id, 'again')} />
                             )}
                             {canRedo && (
