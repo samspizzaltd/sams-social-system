@@ -14,6 +14,7 @@ const metaRoutes = require('./routes/meta');
 const publishQueueRoutes = require('./routes/publishQueue');
 const harvestRoutes = require('./routes/harvest');
 const tiktokRoutes = require('./routes/tiktok');
+const youtubeRoutes = require('./routes/youtube');
 const scheduler = require('./services/scheduler');
 const brandConfig = require('./services/brandConfig');
 
@@ -36,6 +37,7 @@ app.use('/auth', authRoutes);
 // uploading/deleting requires a JWT via the /api routes below.
 app.use('/', metaRoutes.publicRouter); // ONLY the OAuth entry points are public
 app.use('/', tiktokRoutes.publicRouter); // same rule: OAuth entry points only
+app.use('/', youtubeRoutes.publicRouter); // same rule
 app.use('/media', express.static(mediaRoutes.MEDIA_DIR, {
   maxAge: '7d',
   setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -47,6 +49,7 @@ app.use('/api', metaRoutes.apiRouter); // status, diag and reel endpoints - JWT 
 app.use('/api', publishQueueRoutes);
 app.use('/api', harvestRoutes);
 app.use('/api', tiktokRoutes.apiRouter);
+app.use('/api', youtubeRoutes.apiRouter);
 
 // Full system diagnostics (JWT-protected; public /health is deliberately slim)
 app.get('/api/system', (req, res) => {

@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS publish_queue (
   media_id           INT NOT NULL,
   caption            TEXT NOT NULL,
   status             VARCHAR(24) DEFAULT 'pending_review',
-  creation_id        VARCHAR(64) NULL,
+  creation_id        VARCHAR(1024) NULL,
   attempts           INT DEFAULT 0,
   published_media_id VARCHAR(64) NULL,
   permalink          VARCHAR(500) NULL,
@@ -166,3 +166,7 @@ ALTER TABLE publish_queue ADD COLUMN post_options TEXT NULL;
 -- where the old index name does not exist (db.js logs and continues).
 ALTER TABLE accounts ADD UNIQUE KEY uniq_platform_account (platform, business_account_id);
 ALTER TABLE accounts DROP INDEX business_account_id;
+
+-- 2026-11-06: YouTube stores its resumable upload-session URL (~300+ chars)
+-- as creation_id; 64 chars would make the pre-upload save fail every time.
+ALTER TABLE publish_queue MODIFY creation_id VARCHAR(1024) NULL;

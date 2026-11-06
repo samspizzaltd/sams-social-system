@@ -14,12 +14,14 @@ const fmtDate = (d) => {
 function ConnectionsView() {
   const [meta, setMeta] = useState(null);
   const [tiktok, setTiktok] = useState(null);
+  const [youtube, setYoutube] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
 
   const load = useCallback(() => {
     api.get('/api/meta/status').then((r) => setMeta(r.data)).catch(() => setMeta({ unavailable: true }));
     api.get('/api/tiktok/status').then((r) => setTiktok(r.data)).catch(() => setTiktok({ unavailable: true }));
+    api.get('/api/youtube/status').then((r) => setYoutube(r.data)).catch(() => setYoutube({ unavailable: true }));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -36,6 +38,31 @@ function ConnectionsView() {
       setNotice(w
         ? 'A TikTok window opened - log in with the SAM’S TikTok account there, then come back and press Refresh.'
         : 'Your browser blocked the popup - use the "Open TikTok login" link below instead.');
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    }
+  };
+
+  const [ytConnectUrl, setYtConnectUrl] = useState(null);
+  const connectYouTube = async () => {
+    setError(null); setNotice(null);
+    try {
+      const r = await api.get('/api/youtube/connect-url');
+      const w = window.open(r.data.url, '_blank');
+      setYtConnectUrl(r.data.url);
+      setNotice(w
+        ? 'A Google window opened - pick the SAM\u2019S MORE THAN PIZZA channel there, allow the permissions, then come back and press Refresh.'
+        : 'Your browser blocked the popup - use the "Open Google login" link below instead.');
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    }
+  };
+
+  const disconnectYouTube = async () => {
+    setError(null);
+    try {
+      await api.post('/api/youtube/disconnect');
+      load();
     } catch (e) {
       setError(e.response?.data?.error || e.message);
     }
@@ -60,7 +87,7 @@ function ConnectionsView() {
       <h3>Platform connections</h3>
       <ErrorBox error={error} />
       {notice && <div className="cp-success">{notice}</div>}
-      {(meta && meta.unavailable) || (tiktok && tiktok.unavailable) ? (
+      {(meta && meta.unavailable) || (tiktok && tiktok.unavailable) || (youtube && youtube.unavailable) ? (
         <p className="cp-muted">Connection status is unavailable right now (server or database hiccup) - this does NOT mean the accounts are disconnected. Press Refresh in a minute before reconnecting anything.</p>
       ) : null}
       <table className="cp-table">
@@ -93,9 +120,22 @@ function ConnectionsView() {
           </tr>
           <tr>
             <td>YouTube</td>
-            <td><span className="cp-pill warn">not registered</span></td>
-            <td className="cp-muted">Data API v3 - requires a Google Cloud project</td>
-            <td></td>
+            <td>{youtube === null ? '\u2026' : youtube.unavailable ? <span className="cp-pill warn">status unavailable</span> : pill(!!youtube.connected, youtube.connected ? 'connected' : (!youtube.configured ? 'keys not set' : youtube.status === 'disconnected' ? 'disconnected' : youtube.status === 'expired' ? 'login expired' : 'not connected'))}</td>
+            <td className="cp-muted">
+              {youtube && youtube.channel
+                ? youtube.channel.title
+                : youtube && !youtube.configured
+                  ? 'Paste the Google keys at api.sams-social-system.sams.ge/auth/youtube/secret-setup first'
+                  : youtube && youtube.channel_id ? 'channel ' + youtube.channel_id : 'Uploads stay Private until Google audits the project'}
+            </td>
+            <td>
+              {youtube && youtube.connected
+                ? <ConfirmButton className="cp-btn small ghost" label="Disconnect" confirmLabel="Really disconnect?" onConfirm={disconnectYouTube} />
+                : <button className="cp-btn small" disabled={!!(youtube && (youtube.unavailable || !youtube.configured))} onClick={connectYouTube}>Connect YouTube</button>}
+              {ytConnectUrl && !(youtube && youtube.connected) && (
+                <div><a href={ytConnectUrl} target="_blank" rel="noopener noreferrer" onClick={() => setYtConnectUrl(null)}>Open Google login</a></div>
+              )}
+            </td>
           </tr>
         </tbody>
       </table>

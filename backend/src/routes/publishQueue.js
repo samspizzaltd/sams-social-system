@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../database/db');
 const tiktokPublish = require('../services/tiktokPublish');
+const youtubePublish = require('../services/youtubePublish');
 
 // The publish review queue: the ONLY path content takes to the real accounts.
 // Staging is harmless; a row goes public only after the owner clicks Approve
@@ -10,8 +11,10 @@ const tiktokPublish = require('../services/tiktokPublish');
 
 const router = express.Router();
 
-const PLATFORMS = ['instagram', 'facebook_page', 'tiktok'];
-const CAPTION_LIMIT = { instagram: 2200, facebook_page: 5000, tiktok: 2200 };
+const PLATFORMS = ['instagram', 'facebook_page', 'tiktok', 'youtube'];
+const CAPTION_LIMIT = { instagram: 2200, facebook_page: 5000, tiktok: 2200, youtube: 5000 };
+// Platforms whose finished upload publishes by itself (see scheduler.js).
+const COMMIT_ON_UPLOAD = ['tiktok', 'youtube'];
 const TIKTOK_PRIVACY = ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY'];
 
 // POST /api/publish-queue {platform, media_id, caption}
@@ -82,6 +85,22 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
       disable_stitch: !!b.disable_stitch
     });
   }
+  if (row[0].platform === 'youtube') {
+    // YouTube needs a title (max 100, no < or >) and an explicit privacy
+    // choice; the caption becomes the description.
+    const b = req.body || {};
+    const title = String(b.title || '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+    if (!title || title.length > 100) {
+      return res.status(400).json({ error: 'Give the YouTube video a title (1-100 characters, no < or >)' });
+    }
+    if (!youtubePublish.PRIVACY.includes(b.privacy_status)) {
+      return res.status(400).json({ error: 'Pick who can watch this YouTube video' });
+    }
+    if (b.privacy_status !== 'private' && !youtubePublish.appAudited()) {
+      return res.status(400).json({ error: 'Until Google audits our YouTube API project, uploads can only be Private - pick that for now' });
+    }
+    postOptions = JSON.stringify({ title, privacy_status: b.privacy_status });
+  }
 
   const rows = await db.query(
     "UPDATE publish_queue SET status = 'approved_publishing', error = NULL, attempts = 0, creation_id = NULL, post_options = ? WHERE id = ? AND status IN ('pending_review','failed')",
@@ -101,14 +120,14 @@ router.post('/publish-queue/:id/drop', async (req, res) => {
   if (info === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!info.length) return res.status(404).json({ error: 'Not found' });
   const r0 = info[0];
-  if (r0.platform === 'tiktok' && r0.creation_id && r0.status === 'approved_publishing') {
+  if (COMMIT_ON_UPLOAD.includes(r0.platform) && r0.creation_id && r0.status === 'approved_publishing') {
     const parked = await db.query(
-      "UPDATE publish_queue SET status = 'unknown', error = 'drop requested AFTER the upload was committed - TikTok may still publish this video; CHECK THE ACCOUNT' WHERE id = ? AND status = 'approved_publishing'",
+      "UPDATE publish_queue SET status = 'unknown', error = 'drop requested AFTER the upload was committed - the platform may still publish this video; CHECK THE ACCOUNT' WHERE id = ? AND status = 'approved_publishing'",
       [req.params.id]
     );
     if (parked === null) return res.status(503).json({ error: 'Database unavailable' });
     if (!parked.affectedRows) return res.status(409).json({ error: 'Row changed state - reload and look again' });
-    return res.json({ ok: true, status: 'unknown', note: 'Too late to stop this one: the video was already uploaded to TikTok and may still publish. Check the account.' });
+    return res.json({ ok: true, status: 'unknown', note: 'Too late to stop this one: the video was already uploaded and may still publish. Check the account.' });
   }
   const rows = await db.query(
     "UPDATE publish_queue SET status = 'dropped' WHERE id = ? AND status IN ('pending_review','failed','approved_publishing','unknown')",

@@ -28,10 +28,12 @@ export function PublishQueue() {
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(0);
-  const [form, setForm] = useState({ media_id: '', caption: '', instagram: true, facebook_page: false, tiktok: false });
+  const [form, setForm] = useState({ media_id: '', caption: '', instagram: true, facebook_page: false, tiktok: false, youtube: false });
   // TikTok approve sheet: TikTok's rules require showing the creator info and
   // letting the owner pick privacy + interaction settings per post.
   const [tkSheet, setTkSheet] = useState(null);
+  // YouTube approve sheet: a title (YouTube requires one) and who can watch.
+  const [ytSheet, setYtSheet] = useState(null);
   const pollRef = useRef(null);
   const aliveRef = useRef(true);
 
@@ -66,14 +68,14 @@ export function PublishQueue() {
     };
   }, [load]);
 
-  const CAPTION_LIMIT = { instagram: 2200, facebook_page: 5000, tiktok: 2200 };
+  const CAPTION_LIMIT = { instagram: 2200, facebook_page: 5000, tiktok: 2200, youtube: 5000 };
 
   const [staging, setStaging] = useState(false);
   const stage = async (e) => {
     e.preventDefault();
     if (staging) return; // double-click must not stage duplicate rows
     setError(null); setNotice(null);
-    const platforms = [form.instagram && 'instagram', form.facebook_page && 'facebook_page', form.tiktok && 'tiktok'].filter(Boolean);
+    const platforms = [form.instagram && 'instagram', form.facebook_page && 'facebook_page', form.tiktok && 'tiktok', form.youtube && 'youtube'].filter(Boolean);
     if (!platforms.length) { setError('Pick at least one platform'); return; }
     // Validate the caption against every selected platform BEFORE posting, so
     // a partial batch never starts with a request that is guaranteed to fail.
@@ -118,6 +120,7 @@ export function PublishQueue() {
     try {
       await api.post(`/api/publish-queue/${id}/${action}`, body || {});
       setTkSheet(null);
+      setYtSheet(null);
       load();
     } catch (err) {
       setError(err.response?.data?.error || err.message);
@@ -135,6 +138,20 @@ export function PublishQueue() {
       setTkSheet((s) => (s && s.id === id ? { ...s, loading: false, creator: r.data.creator } : s));
     } catch (err) {
       setTkSheet((s) => (s && s.id === id ? { ...s, loading: false, error: err.response?.data?.error || err.message } : s));
+    }
+  };
+
+  // Open the YouTube options sheet (fetches the connected channel first, so
+  // the owner sees exactly which channel the video goes to).
+  const openYtSheet = async (row) => {
+    setError(null);
+    const firstLine = String(row.caption || '').split('\n')[0].replace(/[<>]/g, '').trim().slice(0, 100);
+    setYtSheet({ id: row.id, loading: true, title: firstLine, privacy_status: '' });
+    try {
+      const r = await api.get('/api/youtube/channel-info');
+      setYtSheet((s) => (s && s.id === row.id ? { ...s, loading: false, channel: r.data.channel, audited: r.data.audited, options: r.data.privacy_options } : s));
+    } catch (err) {
+      setYtSheet((s) => (s && s.id === row.id ? { ...s, loading: false, error: err.response?.data?.error || err.message } : s));
     }
   };
 
@@ -242,6 +259,8 @@ export function PublishQueue() {
               onChange={(e) => setForm({ ...form, facebook_page: e.target.checked })} /> Facebook Page</label>
             <label className="cp-check"><input type="checkbox" checked={form.tiktok}
               onChange={(e) => setForm({ ...form, tiktok: e.target.checked })} /> TikTok</label>
+            <label className="cp-check"><input type="checkbox" checked={form.youtube}
+              onChange={(e) => setForm({ ...form, youtube: e.target.checked })} /> YouTube</label>
           </div>
           <label className="cp-caption-label">Caption
             <textarea
@@ -266,7 +285,7 @@ export function PublishQueue() {
             {queue.map((q) => (
               <div className="cp-card cp-content-item" key={q.id}>
                 <div className="cp-content-head">
-                  <strong>#{q.id} · {q.platform === 'instagram' ? 'Instagram' : q.platform === 'tiktok' ? 'TikTok' : 'Facebook Page'} · {q.media_title || 'video #' + q.media_id}</strong>
+                  <strong>#{q.id} · {q.platform === 'instagram' ? 'Instagram' : q.platform === 'tiktok' ? 'TikTok' : q.platform === 'youtube' ? 'YouTube' : 'Facebook Page'} · {q.media_title || 'video #' + q.media_id}</strong>
                   <span className={`cp-pill ${STATUS_PILL[q.status] || 'warn'}`}>{q.status.replace('_', ' ')}</span>
                 </div>
                 {q.url_path && (
@@ -285,6 +304,10 @@ export function PublishQueue() {
                       <button className="cp-btn small" disabled={busy === q.id} onClick={() => openTkSheet(q.id)}>
                         {q.status === 'failed' ? 'Retry' : 'Approve & publish'}
                       </button>
+                    ) : q.platform === 'youtube' ? (
+                      <button className="cp-btn small" disabled={busy === q.id} onClick={() => openYtSheet(q)}>
+                        {q.status === 'failed' ? 'Retry' : 'Approve & publish'}
+                      </button>
                     ) : (
                       <ConfirmButton className="cp-btn small" disabled={busy === q.id}
                         label={q.status === 'failed' ? 'Retry' : 'Approve & publish'}
@@ -300,6 +323,59 @@ export function PublishQueue() {
                       label="Drop" confirmLabel="Really drop?" onConfirm={() => act(q.id, 'drop')} />
                   )}
                 </div>
+                {ytSheet && ytSheet.id === q.id && (
+                  <div className="cp-card" style={{ marginTop: 10, background: 'var(--cp-bg, #faf7f4)' }}>
+                    <strong>YouTube upload options</strong>
+                    {ytSheet.loading ? <Loading /> : ytSheet.error ? (
+                      <p className="cp-muted">Could not load the channel: {ytSheet.error}</p>
+                    ) : (
+                      <>
+                        {ytSheet.channel && (
+                          <p className="cp-muted" style={{ margin: '6px 0' }}>
+                            Uploading to channel <strong>{ytSheet.channel.title}</strong>
+                          </p>
+                        )}
+                        {!ytSheet.audited && (
+                          <p className="cp-muted" style={{ margin: '6px 0' }}>
+                            Until Google audits our YouTube API project, uploads can only be <strong>Private</strong>.
+                            You can still make the video public yourself afterwards in YouTube Studio.
+                          </p>
+                        )}
+                        <div className="cp-form">
+                          <label className="cp-form-wide">Title (max 100 characters)
+                            <input type="text" value={ytSheet.title} maxLength={100}
+                              onChange={(e) => setYtSheet({ ...ytSheet, title: e.target.value })} />
+                          </label>
+                          <label>Who can watch this video
+                            <select value={ytSheet.privacy_status}
+                              onChange={(e) => setYtSheet({ ...ytSheet, privacy_status: e.target.value })}>
+                              <option value="">— choose —</option>
+                              {(ytSheet.options || ['private']).map((p) => (
+                                <option key={p} value={p}>{{
+                                  private: 'Private (only you)',
+                                  unlisted: 'Unlisted (anyone with the link)',
+                                  public: 'Public (everyone)'
+                                }[p] || p}</option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                        <p className="cp-muted" style={{ margin: '6px 0' }}>The caption above becomes the video description. Marked "not made for kids".</p>
+                      </>
+                    )}
+                    <div className="cp-content-actions">
+                      <button className="cp-btn small ghost" onClick={() => setYtSheet(null)}>Cancel</button>
+                      <ConfirmButton className="cp-btn small"
+                        disabled={busy === q.id || ytSheet.loading || !!ytSheet.error || !ytSheet.privacy_status || !String(ytSheet.title || '').trim()}
+                        label="Confirm & upload to YouTube"
+                        confirmLabel="Tap again - this uploads for real"
+                        onConfirm={() => act(q.id, 'approve', {
+                          title: ytSheet.title,
+                          privacy_status: ytSheet.privacy_status
+                        })} />
+                    </div>
+                  </div>
+                )}
                 {tkSheet && tkSheet.id === q.id && (
                   <div className="cp-card" style={{ marginTop: 10, background: 'var(--cp-bg, #faf7f4)' }}>
                     <strong>TikTok posting options</strong>

@@ -2,6 +2,7 @@ const db = require('../database/db');
 const brandConfig = require('./brandConfig');
 const metaPublish = require('./metaPublish');
 const tiktokPublish = require('./tiktokPublish');
+const youtubePublish = require('./youtubePublish');
 
 // Two background loops:
 //  1. Cycle scheduler - runs an autonomous cycle at the owner-configured
@@ -22,6 +23,9 @@ const TBILISI_OFFSET_MS = 4 * 3600 * 1000; // Georgia has no DST
 const PUBLIC_ORIGIN = process.env.PUBLIC_API_ORIGIN || 'https://api.sams-social-system.sams.ge';
 const MAX_POLL_ATTEMPTS = 40;
 const TIKTOK_MAX_POLL_ATTEMPTS = 90; // TikTok moderation of a 60 MB video can be slow
+// Platforms where the finished UPLOAD itself publishes (no separate publish
+// call): once bytes went out, nothing may become a retryable 'failed'.
+const COMMIT_ON_UPLOAD = ['tiktok', 'youtube'];
 const STALE_PUBLISHING_MS = 10 * 60 * 1000;
 
 function tbilisiNow() {
@@ -151,7 +155,11 @@ async function processClaimedRow(row) {
             // land, TikTok publishes on its own, so the row must already
             // read as committed territory for the sweeper.
             (publishId) => bumpClaimed(row.id, 'creation_id = ?', [publishId]))
-        : await metaPublish.pageStartReel(videoUrl, row.filename);
+        : row.platform === 'youtube'
+          ? await youtubePublish.startPost(row.filename, row.caption, postOptions,
+              // Same rule as TikTok: the session URL is saved before any byte.
+              (sessionUrl) => bumpClaimed(row.id, 'creation_id = ?', [sessionUrl]))
+          : await metaPublish.pageStartReel(videoUrl, row.filename);
     if (start.maybePublished) {
       // The platform may have registered the post request - never retry blind.
       console.error('[scheduler] row #' + row.id + ' start outcome UNKNOWN (' + start.error + ') - leaving for the sweeper');
@@ -179,7 +187,9 @@ async function processClaimedRow(row) {
     ? await metaPublish.igTryPublish(row.creation_id)
     : row.platform === 'tiktok'
       ? await tiktokPublish.tryFinish(row.creation_id)
-      : await metaPublish.pageTryPublish(row.creation_id, row.caption);
+      : row.platform === 'youtube'
+        ? await youtubePublish.tryFinish(row.creation_id, row.filename)
+        : await metaPublish.pageTryPublish(row.creation_id, row.caption);
 
   const pollCap = row.platform === 'tiktok' ? TIKTOK_MAX_POLL_ATTEMPTS : MAX_POLL_ATTEMPTS;
   if (!result.ok) {
@@ -190,8 +200,8 @@ async function processClaimedRow(row) {
       console.error('[scheduler] row #' + row.id + ' publish outcome UNKNOWN (' + result.error + ') - leaving for the sweeper');
       return;
     }
-    if (row.platform === 'tiktok' && !result.definitive) {
-      // The upload is already committed (TikTok publishes it on its own), so
+    if (COMMIT_ON_UPLOAD.includes(row.platform) && !result.definitive) {
+      // The upload is already committed (the platform publishes it on its own), so
       // a transient poll problem must NEVER become a retryable 'failed' -
       // that invites a re-approve and a double post. Keep polling instead.
       if (row.attempts >= pollCap) {
@@ -207,7 +217,7 @@ async function processClaimedRow(row) {
   }
   if (!result.done) {
     if (row.attempts >= pollCap) {
-      if (row.platform === 'tiktok') {
+      if (COMMIT_ON_UPLOAD.includes(row.platform)) {
         // Committed upload still processing - parking as retryable would
         // invite a double post. The owner checks the account first.
         await bumpClaimed(row.id, "status = 'unknown', error = 'still processing after ~30 min - CHECK THE ACCOUNT before doing anything with this row', attempts = attempts + 1", []);
