@@ -25,6 +25,12 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ||
 ).split(',').map(o => o.trim());
 app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json());
+// Platform fetchers (Facebook, Instagram) read robots.txt before pulling a
+// video by URL; a missing one answered with an HTML 404 got read as
+// "restricted" (2026-10-14). Media must stay fetchable; the API need not be.
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send('User-agent: *\nAllow: /media/\nDisallow: /api/\nDisallow: /auth/\n');
+});
 app.use('/auth', authRoutes);
 // Uploaded media is public-read (it is destined for social media anyway);
 // uploading/deleting requires a JWT via the /api routes below.

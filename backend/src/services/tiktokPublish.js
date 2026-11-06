@@ -188,7 +188,13 @@ async function startPost(filename, caption, options, persistId) {
     return { ok: false, error: 'init failed: ' + err.message };
   }
   if (!init.data || !init.data.publish_id || (init.error && init.error.code !== 'ok')) {
-    return { ok: false, error: (init.error && init.error.message) || 'init returned an unrecognized response' };
+    const msg = (init.error && init.error.message) || 'init returned an unrecognized response';
+    // TikTok answers a non-private post from an unaudited app with a bare
+    // link to its guidelines - say what actually went wrong.
+    if (/integration guidelines|content-sharing-guidelines/i.test(msg) || (init.error && init.error.code === 'unaudited_client_can_only_post_to_private_accounts')) {
+      return { ok: false, error: 'TikTok refused: until the app passes TikTok review, posts must be "Only me (private)". Approve again and pick that. (TikTok said: ' + msg + ')' };
+    }
+    return { ok: false, error: msg };
   }
 
   // Persist the id BEFORE uploading: if the process dies mid-upload, the
@@ -255,4 +261,10 @@ async function tryFinish(publishId) {
   return { ok: true, done: false }; // PROCESSING_UPLOAD / PROCESSING_DOWNLOAD / anything in-flight
 }
 
-module.exports = { account, creatorInfo, startPost, tryFinish, ALLOWED_PRIVACY };
+// Flip TIKTOK_APP_AUDITED=true in .env once TikTok approves the app review;
+// until then only SELF_ONLY posts are accepted by TikTok.
+function appAudited() {
+  return String(process.env.TIKTOK_APP_AUDITED || '').toLowerCase() === 'true';
+}
+
+module.exports = { account, creatorInfo, startPost, tryFinish, appAudited, ALLOWED_PRIVACY };

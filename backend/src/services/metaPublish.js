@@ -1,9 +1,13 @@
+const fs = require('fs');
+const path = require('path');
+const { Readable } = require('stream');
 const db = require('../database/db');
 
 // Shared Meta publishing helpers used by the publish queue finisher.
 // All functions return { ok, ... } and never throw to the caller.
 
 const GRAPH = 'https://graph.facebook.com/v26.0';
+const MEDIA_DIR = path.join(__dirname, '..', '..', '..', 'media');
 
 async function account(platform) {
   const rows = await db.query(
@@ -82,9 +86,14 @@ async function igTryPublish(creationId) {
   return { ok: true, done: true, mediaId: j.id, permalink };
 }
 
-// ---------- Facebook Page Reels (3-phase, via file_url) ----------
+// ---------- Facebook Page Reels (3-phase) ----------
 
-async function pageStartReel(videoUrl) {
+// The bytes are pushed straight from our disk when the file is local:
+// Facebook's file_url fetcher refused our host once ("Restricted by
+// robots.txt", 2026-10-14), and pushing removes that dependency entirely.
+// Nothing publishes until the separate finish call, so an upload failure here
+// is cleanly retryable.
+async function pageStartReel(videoUrl, filename) {
   const page = await account('facebook_page');
   if (!page) return { ok: false, error: 'Facebook Page not connected' };
   try {
@@ -96,10 +105,28 @@ async function pageStartReel(videoUrl) {
     const sj = await start.json();
     if (!sj.video_id) return { ok: false, error: (sj.error && sj.error.message) || 'start phase failed' };
 
-    const up = await fetch('https://rupload.facebook.com/video-upload/v26.0/' + sj.video_id, {
-      method: 'POST',
-      headers: { Authorization: 'OAuth ' + page.access_token, file_url: videoUrl }
-    });
+    const localPath = filename ? path.join(MEDIA_DIR, path.basename(filename)) : null;
+    let size = 0;
+    if (localPath) {
+      try { size = fs.statSync(localPath).size; } catch { size = 0; }
+    }
+    const up = size > 0
+      ? await fetch('https://rupload.facebook.com/video-upload/v26.0/' + sj.video_id, {
+        method: 'POST',
+        headers: {
+          Authorization: 'OAuth ' + page.access_token,
+          offset: '0',
+          file_size: String(size),
+          'Content-Type': 'application/octet-stream'
+        },
+        body: Readable.toWeb(fs.createReadStream(localPath)),
+        duplex: 'half',
+        signal: AbortSignal.timeout(5 * 60 * 1000)
+      })
+      : await fetch('https://rupload.facebook.com/video-upload/v26.0/' + sj.video_id, {
+        method: 'POST',
+        headers: { Authorization: 'OAuth ' + page.access_token, file_url: videoUrl }
+      });
     const uj = await up.json();
     if (!uj.success) return { ok: false, error: (uj.debug_info && uj.debug_info.message) || 'upload phase failed' };
 

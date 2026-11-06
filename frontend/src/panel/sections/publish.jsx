@@ -313,6 +313,12 @@ export function PublishQueue() {
                             {tkSheet.creator.creator_username ? ' (@' + tkSheet.creator.creator_username + ')' : ''}
                           </p>
                         )}
+                        {tkSheet.creator && tkSheet.creator.unaudited && (
+                          <p className="cp-muted" style={{ margin: '6px 0' }}>
+                            Until TikTok approves our app review, TikTok only accepts <strong>Only me (private)</strong> posts.
+                            The video still lands on the profile - visible to the account only.
+                          </p>
+                        )}
                         <div className="cp-form">
                           <label>Who can watch this video
                             <select value={tkSheet.privacy_level}

@@ -151,7 +151,7 @@ async function processClaimedRow(row) {
             // land, TikTok publishes on its own, so the row must already
             // read as committed territory for the sweeper.
             (publishId) => bumpClaimed(row.id, 'creation_id = ?', [publishId]))
-        : await metaPublish.pageStartReel(videoUrl);
+        : await metaPublish.pageStartReel(videoUrl, row.filename);
     if (start.maybePublished) {
       // The platform may have registered the post request - never retry blind.
       console.error('[scheduler] row #' + row.id + ' start outcome UNKNOWN (' + start.error + ') - leaving for the sweeper');

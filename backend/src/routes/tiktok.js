@@ -122,7 +122,14 @@ apiRouter.get('/tiktok/status', async (req, res) => {
 apiRouter.get('/tiktok/creator-info', async (req, res) => {
   const r = await tiktokPublish.creatorInfo();
   if (!r.ok) return res.status(503).json({ error: r.error });
-  res.json({ creator: r.creator });
+  // Until TikTok audits the app it only accepts "Only me" posts, even though
+  // creator_info still lists every level the account itself could use.
+  const creator = { ...r.creator };
+  if (!tiktokPublish.appAudited()) {
+    creator.privacy_level_options = ['SELF_ONLY'];
+    creator.unaudited = true;
+  }
+  res.json({ creator });
 });
 
 // Deliberate unbind, so a reconnect with a different account is an explicit

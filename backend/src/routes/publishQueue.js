@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../database/db');
+const tiktokPublish = require('../services/tiktokPublish');
 
 // The publish review queue: the ONLY path content takes to the real accounts.
 // Staging is harmless; a row goes public only after the owner clicks Approve
@@ -70,6 +71,9 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
     const b = req.body || {};
     if (!TIKTOK_PRIVACY.includes(b.privacy_level)) {
       return res.status(400).json({ error: 'Pick a privacy level for this TikTok post (who can watch it)' });
+    }
+    if (b.privacy_level !== 'SELF_ONLY' && !tiktokPublish.appAudited()) {
+      return res.status(400).json({ error: 'Until TikTok approves the app review, TikTok only accepts "Only me (private)" posts - pick that for now' });
     }
     postOptions = JSON.stringify({
       privacy_level: b.privacy_level,
