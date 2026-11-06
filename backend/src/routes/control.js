@@ -32,12 +32,19 @@ router.get('/content', async (req, res) => {
   res.json({ content: rows });
 });
 
-// GET /api/content/:id - full record including script
+// GET /api/content/:id - full record including script, plus every video
+// rendered from it, so the owner can review the real thing before approving.
 router.get('/content/:id', async (req, res) => {
   const rows = await db.query('SELECT * FROM content WHERE id = ?', [req.params.id]);
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!rows.length) return res.status(404).json({ error: 'Not found' });
-  res.json(rows[0]);
+  const renders = await db.query(
+    'SELECT r.id, r.template, r.status, r.error, r.created_at, m.id AS media_id, m.url_path' +
+    ' FROM render_jobs r LEFT JOIN media m ON m.id = r.output_media_id' +
+    ' WHERE r.content_id = ? ORDER BY r.created_at DESC LIMIT 10',
+    [req.params.id]
+  );
+  res.json({ ...rows[0], renders: renders || [] });
 });
 
 // POST /api/content/:id/status {status: "approved"|"rejected"}

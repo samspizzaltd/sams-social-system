@@ -157,10 +157,110 @@ export function Overview({ goTo }) {
 
 // ---------- Content Studio ----------
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const BEAT_LABEL = { hook: 'Hook', body: 'Scene', cta: 'Call to action' };
+
+// Everything about one draft, so the owner judges the real thing before
+// approving: the shooting script beat by beat, and any video rendered from it
+// (or a button to render one from library footage via the PC render worker).
+function ContentReview({ id }) {
+  const [item, setItem] = useState(null);
+  const [error, setError] = useState(null);
+  const [footage, setFootage] = useState([]);
+  const [pick, setPick] = useState('');
+  const [notice, setNotice] = useState(null);
+  const pollRef = useRef(null);
+  const aliveRef = useRef(true);
+
+  const load = useCallback(() => {
+    api.get(`/api/content/${id}`)
+      .then((r) => {
+        if (!aliveRef.current) return;
+        setItem(r.data);
+        const busyRender = (r.data.renders || []).some((x) => x.status === 'queued' || x.status === 'rendering');
+        clearTimeout(pollRef.current);
+        if (busyRender) pollRef.current = setTimeout(load, 15000);
+      })
+      .catch((e) => { if (aliveRef.current) setError(e.response?.data?.error || e.message); });
+  }, [id]);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    load();
+    api.get('/api/media?kind=video')
+      .then((r) => { if (aliveRef.current) setFootage(r.data.media || []); })
+      .catch(() => {});
+    return () => { aliveRef.current = false; clearTimeout(pollRef.current); };
+  }, [load]);
+
+  const render = async () => {
+    setError(null); setNotice(null);
+    try {
+      await api.post('/api/render-jobs', { template: 'ScriptPromo', content_id: id, media_ids: [Number(pick)] });
+      setNotice('Render queued. The render worker on your PC turns the script and this clip into a video - it appears here when done (keep the worker running).');
+      load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    }
+  };
+
+  if (!item) return error ? <ErrorBox error={error} /> : <Loading />;
+
+  let script = null;
+  try { script = item.script ? JSON.parse(item.script) : null; } catch { script = null; }
+  const beats = (script && script.beats) || [];
+  const renders = item.renders || [];
+  const done = renders.filter((r) => r.status === 'done' && r.url_path);
+
+  return (
+    <div className="cp-card" style={{ marginTop: 10, background: 'var(--cp-bg, #faf7f4)' }}>
+      <ErrorBox error={error} />
+      {notice && <div className="cp-success">{notice}</div>}
+
+      <strong>Video</strong>
+      {done.length ? done.map((r) => (
+        <video key={r.id} controls preload="metadata" className="cp-review-video" src={API_BASE + r.url_path} />
+      )) : (
+        <p className="cp-muted">
+          No video yet - a cycle writes the idea, caption and shooting script; the video gets rendered or filmed afterwards.
+          {renders.some((r) => r.status === 'queued' || r.status === 'rendering') ? ' A render is in progress…' : ''}
+          {renders.some((r) => r.status === 'failed') ? ' Last render failed: ' + String((renders.find((r) => r.status === 'failed') || {}).error || '').slice(0, 140) : ''}
+        </p>
+      )}
+
+      <div className="cp-form" style={{ marginTop: 8 }}>
+        <label className="cp-form-wide">Render a preview video from this script using footage
+          <select value={pick} onChange={(e) => setPick(e.target.value)}>
+            <option value="">— pick a clip from the library —</option>
+            {footage.map((m) => <option key={m.id} value={m.id}>#{m.id} {m.title || 'video'}</option>)}
+          </select>
+        </label>
+        <button className="cp-btn small" disabled={!pick} onClick={render}>Render preview video</button>
+      </div>
+
+      <strong style={{ display: 'block', marginTop: 12 }}>Shooting script{script && script.duration ? ` (${script.duration} s)` : ''}</strong>
+      {beats.length ? (
+        <table className="cp-table">
+          <thead><tr><th>When</th><th>Part</th><th>On screen / spoken</th></tr></thead>
+          <tbody>
+            {beats.map((b, i) => (
+              <tr key={i}><td>{b.at}</td><td>{BEAT_LABEL[b.type] || b.type}</td><td>{b.text}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      ) : <p className="cp-muted">{item.script ? String(item.script).slice(0, 600) : 'No script stored for this draft.'}</p>}
+
+      <strong style={{ display: 'block', marginTop: 12 }}>Caption</strong>
+      <p className="cp-caption">{item.caption}</p>
+    </div>
+  );
+}
+
 export function ContentSection({ status }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(0);
+  const [openId, setOpenId] = useState(null);
 
   const load = useCallback(() => {
     api.get(`/api/content?status=${status}`)
@@ -197,8 +297,12 @@ export function ContentSection({ status }) {
             </span>
           </div>
           <p className="cp-caption">{c.caption}</p>
+          {openId === c.id && <ContentReview id={c.id} />}
           <div className="cp-content-actions">
             <span className="cp-muted">{fmtDate(c.created_at)}</span>
+            <button className="cp-btn small ghost" onClick={() => setOpenId(openId === c.id ? null : c.id)}>
+              {openId === c.id ? 'Close review' : 'Review'}
+            </button>
             {!/approved/.test(c.status) && (
               <button className="cp-btn small" disabled={busy === c.id} onClick={() => setStatus(c.id, 'approved')}>Approve</button>
             )}
