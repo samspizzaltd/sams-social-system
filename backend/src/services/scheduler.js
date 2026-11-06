@@ -26,6 +26,9 @@ const TIKTOK_MAX_POLL_ATTEMPTS = 90; // TikTok moderation of a 60 MB video can b
 // Platforms where the finished UPLOAD itself publishes (no separate publish
 // call): once bytes went out, nothing may become a retryable 'failed'.
 const COMMIT_ON_UPLOAD = ['tiktok', 'youtube'];
+// A YouTube session that reports "incomplete" is only treated as final (no
+// video, safe to retry) after it stays incomplete for this many polls (~2 min).
+const YT_INCOMPLETE_SETTLE_POLLS = 6;
 const STALE_PUBLISHING_MS = 10 * 60 * 1000;
 
 function tbilisiNow() {
@@ -133,8 +136,38 @@ async function bumpClaimed(rowId, fields, params) {
   return !!(r && r.affectedRows);
 }
 
+// Save the platform's session/publish id BEFORE any byte uploads, then read
+// it back: if the column silently truncated it, uploading would strand the row.
+async function persistCreationId(rowId, value) {
+  if (!(await bumpClaimed(rowId, 'creation_id = ?', [value]))) return false;
+  const back = await db.query("SELECT creation_id FROM publish_queue WHERE id = ? AND status = 'publishing'", [rowId]);
+  return !!(back && back.length && back[0].creation_id === value);
+}
+
+// The post is LIVE. Saving this outcome is the one write that must not be
+// lost - retry it a few times; if it still fails the row stays 'publishing'
+// and the sweeper parks it as 'unknown' (never auto-retried).
+async function markPublished(row, result) {
+  for (let i = 0; i < 3; i++) {
+    const saved = await bumpClaimed(
+      row.id,
+      "status = 'published', published_media_id = ?, permalink = ?, error = ?, published_at = NOW(), attempts = attempts + 1",
+      [result.mediaId, result.permalink,
+        result.alreadyPublished ? 'recovered: the platform reported this container was already published' : null]
+    );
+    if (saved) {
+      console.log('[scheduler] published queue row #' + row.id + ' -> ' + (result.permalink || result.mediaId || 'done'));
+      return;
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  console.error('[scheduler] row #' + row.id + ' PUBLISHED but the result could not be saved - it will be parked as unknown');
+}
+
 async function processClaimedRow(row) {
-  if (!row.url_path) {
+  // A committed row (creation_id set) must reach its real outcome even if the
+  // Library item was deleted meanwhile - only an uncommitted row may fail here.
+  if (!row.url_path && !row.creation_id) {
     await bumpClaimed(row.id, "status = 'failed', error = ?", ['media file missing on the server']);
     return;
   }
@@ -154,11 +187,11 @@ async function processClaimedRow(row) {
             // Persist the publish id BEFORE any byte uploads: once bytes
             // land, TikTok publishes on its own, so the row must already
             // read as committed territory for the sweeper.
-            (publishId) => bumpClaimed(row.id, 'creation_id = ?', [publishId]))
+            (publishId) => persistCreationId(row.id, publishId))
         : row.platform === 'youtube'
           ? await youtubePublish.startPost(row.filename, row.caption, postOptions,
               // Same rule as TikTok: the session URL is saved before any byte.
-              (sessionUrl) => bumpClaimed(row.id, 'creation_id = ?', [sessionUrl]))
+              (sessionUrl) => persistCreationId(row.id, sessionUrl))
           : await metaPublish.pageStartReel(videoUrl, row.filename);
     if (start.maybePublished) {
       // The platform may have registered the post request - never retry blind.
@@ -174,6 +207,10 @@ async function processClaimedRow(row) {
       await bumpClaimed(row.id, 'error = ?', ['upload warning: ' + start.uploadWarning]);
     }
     const saved = await bumpClaimed(row.id, 'creation_id = ?, attempts = attempts + 1', [start.creationId]);
+    if (saved && start.publishedNow) {
+      await markPublished(row, start.publishedNow);
+      return;
+    }
     if (saved) {
       // Release the claim so the next tick picks it up for polling. An
       // unpublished container that gets orphaned simply expires - safe.
@@ -198,6 +235,18 @@ async function processClaimedRow(row) {
       // 'failed' would make it retryable and a retry could double-publish.
       // Leave the row claimed; the sweeper parks it as 'unknown'.
       console.error('[scheduler] row #' + row.id + ' publish outcome UNKNOWN (' + result.error + ') - leaving for the sweeper');
+      return;
+    }
+    if (result.incomplete) {
+      if (!result.fullyReceived && row.attempts >= YT_INCOMPLETE_SETTLE_POLLS) {
+        // Stayed incomplete with bytes missing: no video exists - safe to retry.
+        await bumpClaimed(row.id, "status = 'failed', error = ?, attempts = attempts + 1", [result.error + ' - no video was created; safe to approve again']);
+      } else if (row.attempts >= pollCap) {
+        await bumpClaimed(row.id, "status = 'unknown', error = 'upload never confirmed - CHECK THE CHANNEL before doing anything with this row', attempts = attempts + 1", []);
+      } else {
+        const saved = await bumpClaimed(row.id, 'attempts = attempts + 1, error = ?', ['waiting: ' + result.error]);
+        if (saved) await bumpClaimed(row.id, "status = 'approved_publishing'", []);
+      }
       return;
     }
     if (COMMIT_ON_UPLOAD.includes(row.platform) && !result.definitive) {
@@ -231,23 +280,7 @@ async function processClaimedRow(row) {
     return;
   }
 
-  // The post is LIVE. Saving this outcome is the one write that must not be
-  // lost - retry it a few times; if it still fails the row stays 'publishing'
-  // and the sweeper parks it as 'unknown' (never auto-retried).
-  for (let i = 0; i < 3; i++) {
-    const saved = await bumpClaimed(
-      row.id,
-      "status = 'published', published_media_id = ?, permalink = ?, error = ?, published_at = NOW(), attempts = attempts + 1",
-      [result.mediaId, result.permalink,
-        result.alreadyPublished ? 'recovered: the platform reported this container was already published' : null]
-    );
-    if (saved) {
-      console.log('[scheduler] published queue row #' + row.id + ' -> ' + (result.permalink || result.mediaId || 'done'));
-      return;
-    }
-    await new Promise(r => setTimeout(r, 1500));
-  }
-  console.error('[scheduler] row #' + row.id + ' PUBLISHED but the result could not be saved - it will be parked as unknown');
+  await markPublished(row, result);
 }
 
 // Rows stuck in 'publishing' (crash mid-work, or a publish whose outcome

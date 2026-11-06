@@ -145,7 +145,7 @@ export function PublishQueue() {
   // the owner sees exactly which channel the video goes to).
   const openYtSheet = async (row) => {
     setError(null);
-    const firstLine = String(row.caption || '').split('\n')[0].replace(/[<>]/g, '').trim().slice(0, 100);
+    const firstLine = Array.from(String(row.caption || '').split('\n')[0].replace(/[<>]/g, '').trim()).slice(0, 100).join('');
     setYtSheet({ id: row.id, loading: true, title: firstLine, privacy_status: '' });
     try {
       const r = await api.get('/api/youtube/channel-info');
@@ -337,8 +337,8 @@ export function PublishQueue() {
                         )}
                         {!ytSheet.audited && (
                           <p className="cp-muted" style={{ margin: '6px 0' }}>
-                            Until Google audits our YouTube API project, uploads can only be <strong>Private</strong>.
-                            You can still make the video public yourself afterwards in YouTube Studio.
+                            Until Google audits our YouTube API project, uploads are locked to <strong>Private</strong> -
+                            YouTube won't let them be made public, even from YouTube Studio, until the audit passes.
                           </p>
                         )}
                         <div className="cp-form">

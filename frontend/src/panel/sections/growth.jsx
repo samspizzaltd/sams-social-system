@@ -124,12 +124,14 @@ function ConnectionsView() {
             <td className="cp-muted">
               {youtube && youtube.channel
                 ? youtube.channel.title
+                : youtube && youtube.channel_unavailable
+                  ? 'connected - channel name temporarily unavailable'
                 : youtube && !youtube.configured
                   ? 'Paste the Google keys at api.sams-social-system.sams.ge/auth/youtube/secret-setup first'
                   : youtube && youtube.channel_id ? 'channel ' + youtube.channel_id : 'Uploads stay Private until Google audits the project'}
             </td>
             <td>
-              {youtube && youtube.connected
+              {youtube && youtube.channel_id && youtube.status !== 'disconnected'
                 ? <ConfirmButton className="cp-btn small ghost" label="Disconnect" confirmLabel="Really disconnect?" onConfirm={disconnectYouTube} />
                 : <button className="cp-btn small" disabled={!!(youtube && (youtube.unavailable || !youtube.configured))} onClick={connectYouTube}>Connect YouTube</button>}
               {ytConnectUrl && !(youtube && youtube.connected) && (

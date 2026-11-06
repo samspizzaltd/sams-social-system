@@ -121,6 +121,17 @@ router.delete('/media/:id', async (req, res) => {
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!rows.length) return res.status(404).json({ error: 'Not found' });
 
+  // A video that is being published (or whose outcome is unconfirmed) must
+  // stay put - the publisher still needs it to confirm what happened.
+  const busy = await db.query(
+    "SELECT id FROM publish_queue WHERE media_id = ? AND status IN ('approved_publishing','publishing','unknown') LIMIT 1",
+    [req.params.id]
+  );
+  if (busy === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (busy.length) {
+    return res.status(409).json({ error: 'This video is being published (queue row #' + busy[0].id + ') - wait until that row finishes before removing it' });
+  }
+
   const del = await db.query('DELETE FROM media WHERE id = ?', [req.params.id]);
   if (del === null) return res.status(503).json({ error: 'Database unavailable' });
   if (rows[0].filename) {

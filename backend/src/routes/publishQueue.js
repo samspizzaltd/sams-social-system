@@ -130,7 +130,8 @@ router.post('/publish-queue/:id/drop', async (req, res) => {
     return res.json({ ok: true, status: 'unknown', note: 'Too late to stop this one: the video was already uploaded and may still publish. Check the account.' });
   }
   const rows = await db.query(
-    "UPDATE publish_queue SET status = 'dropped' WHERE id = ? AND status IN ('pending_review','failed','approved_publishing','unknown')",
+    "UPDATE publish_queue SET status = 'dropped' WHERE id = ? AND status IN ('pending_review','failed','approved_publishing','unknown')" +
+      " AND NOT (status = 'approved_publishing' AND creation_id IS NOT NULL AND platform IN ('tiktok','youtube'))",
     [req.params.id]
   );
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });

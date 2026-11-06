@@ -100,7 +100,10 @@ apiRouter.get('/youtube/status', async (req, res) => {
   const acc = rows[0];
   const info = acc.status === 'active' ? await youtubePublish.channelInfo() : { ok: false };
   res.json({
-    connected: acc.status === 'active' && info.ok,
+    // A working binding must not read "not connected" just because the
+    // channel-name lookup blipped (that invites a needless reconnect).
+    connected: acc.status === 'active',
+    channel_unavailable: acc.status === 'active' && !info.ok,
     configured,
     channel_id: acc.business_account_id,
     status: acc.status,
@@ -190,10 +193,20 @@ publicRouter.get('/auth/youtube/callback', async (req, res) => {
       headers: { Authorization: 'Bearer ' + j.access_token },
       signal: AbortSignal.timeout(15 * 1000)
     });
-    const cj = await cr.json();
+    const cj = await cr.json().catch(() => ({}));
+    if (!cr.ok) {
+      return fail('Could not read the channel (' + String((cj.error && cj.error.message) || ('HTTP ' + cr.status)).slice(0, 160) + '). On the Google screen keep BOTH permissions ticked, then try again.');
+    }
     const ch = cj.items && cj.items[0];
     if (!ch) {
       return fail('That Google account has no YouTube channel. On the Google screen, choose the account or brand account that owns the Sam’s channel.');
+    }
+
+    // Optional hard pin: with YOUTUBE_CHANNEL_ID set, no other channel can
+    // ever be bound - not even on the very first connect.
+    const pinned = String(process.env.YOUTUBE_CHANNEL_ID || '').trim();
+    if (pinned && String(ch.id) !== pinned) {
+      return fail('That is the channel "' + ((ch.snippet && ch.snippet.title) || ch.id) + '", not the Sam\u2019s channel this system is locked to. Press Connect YouTube again and pick Sam\u2019s More Than Pizza on the Google screen.');
     }
 
     const existing = await db.query("SELECT business_account_id, status FROM accounts WHERE platform = 'youtube'");

@@ -141,7 +141,23 @@ const PRIVACY = ['private', 'unlisted', 'public'];
 
 function cleanTitle(s) {
   // YouTube rejects < and > in titles and caps them at 100 characters.
-  return String(s || '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  // Array.from slices by code point, so an emoji is never cut in half.
+  return Array.from(String(s || '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim()).slice(0, 100).join('');
+}
+
+// YouTube also rejects < and > in descriptions, and caps them at 5000 BYTES:
+// a Georgian caption is ~3 bytes per letter, so trim by UTF-8 size.
+function cleanDescription(s) {
+  const chars = Array.from(String(s || '').replace(/[<>]/g, ''));
+  let bytes = 0;
+  let out = '';
+  for (const ch of chars) {
+    const n = Buffer.byteLength(ch, 'utf8');
+    if (bytes + n > 5000) break;
+    bytes += n;
+    out += ch;
+  }
+  return out;
 }
 
 // Phase 1: open a resumable session, persist its URL via persistId (MUST
@@ -181,7 +197,7 @@ async function startPost(filename, caption, options, persistId) {
       body: JSON.stringify({
         snippet: {
           title,
-          description: String(caption || '').slice(0, 5000),
+          description: cleanDescription(caption),
           categoryId: '26' // Howto & Style - food content
         },
         status: {
@@ -221,15 +237,27 @@ async function startPost(filename, caption, options, persistId) {
       },
       body: Readable.toWeb(fs.createReadStream(filePath)),
       duplex: 'half',
+      redirect: 'manual', // a 308 means "incomplete" here, never a redirect to follow
       signal: AbortSignal.timeout(10 * 60 * 1000)
     });
-    if (up.status !== 200 && up.status !== 201) {
-      return { ok: true, creationId: sessionUrl, uploadWarning: 'upload returned HTTP ' + up.status };
+    if (up.status === 200 || up.status === 201) {
+      // The answer already carries the new video - record it straight away
+      // instead of depending on a later session query that may not answer.
+      let j = null;
+      try { j = await up.json(); } catch { /* fall back to the status check */ }
+      if (j && j.id) {
+        return {
+          ok: true,
+          creationId: sessionUrl,
+          publishedNow: { mediaId: j.id, permalink: 'https://youtu.be/' + j.id, privacy: j.status && j.status.privacyStatus }
+        };
+      }
+      return { ok: true, creationId: sessionUrl, uploadWarning: 'upload finished but returned no video id' };
     }
+    return { ok: true, creationId: sessionUrl, uploadWarning: 'upload returned HTTP ' + up.status };
   } catch (err) {
     return { ok: true, creationId: sessionUrl, uploadWarning: 'upload outcome unclear: ' + err.message };
   }
-  return { ok: true, creationId: sessionUrl };
 }
 
 // Phase 2: ask the upload session what happened. definitive:true marks the
@@ -253,6 +281,7 @@ async function tryFinish(sessionUrl, filename) {
         'Content-Length': '0',
         'Content-Range': 'bytes */' + total
       },
+      redirect: 'manual',
       signal: AbortSignal.timeout(30 * 1000)
     });
   } catch (err) {
@@ -274,7 +303,18 @@ async function tryFinish(sessionUrl, filename) {
     return { ok: false, error: 'upload confirmed but no video id returned' };
   }
   if (r.status === 308) {
-    return { ok: false, definitive: true, error: 'upload did not complete - no video was created; safe to approve again' };
+    // "Incomplete" - but right after an aborted upload Google may still be
+    // receiving or finishing the last bytes. Report how much arrived and let
+    // the scheduler call it final only after it stays incomplete for a while.
+    const m = /bytes=0-(\d+)/.exec(r.headers.get('range') || '');
+    const received = m ? Number(m[1]) + 1 : 0;
+    const fullyReceived = total === '*' || received >= Number(total);
+    return {
+      ok: false,
+      incomplete: true,
+      fullyReceived,
+      error: 'upload incomplete (' + received + ' of ' + total + ' bytes received)'
+    };
   }
   return { ok: false, error: 'status check returned HTTP ' + r.status };
 }
