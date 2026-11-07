@@ -152,6 +152,11 @@ export function AutopilotCard({ goTo }) {
   const workerSeen = ago(ap.worker_last_seen_s);
   const workerOk = ap.worker_last_seen_s !== null && ap.worker_last_seen_s < 180;
   const preparing = (c.preparing || 0) + (c.analysed_waiting || 0);
+  // Connected platforms that do not show this system's posts publicly yet
+  // (TikTok / YouTube before their app reviews) - their posts wait.
+  const waitingNames = (ap.waiting_platforms || []).map((p) => PLATFORM_NAME[p] || p);
+  const waitingPosts = Object.entries(c.waiting_route || {}).filter(([, n]) => n > 0);
+  const publicNames = (ap.connected || []).filter((p) => !(ap.waiting_platforms || []).includes(p)).map((p) => PLATFORM_NAME[p] || p);
 
   return (
     <div className={'cp-card cp-ap-card ' + (on ? 'on' : 'off')}>
@@ -191,9 +196,12 @@ export function AutopilotCard({ goTo }) {
         <span className={'cp-pill ' + (ap.claude ? 'ok' : 'warn')}>
           Captions: {ap.claude ? 'written by Claude' : 'templates (Claude offline)'}
         </span>
-        <span className={'cp-pill ' + ((ap.connected || []).length ? 'ok' : 'err')}>
-          Posting to: {(ap.connected || []).length ? ap.connected.map((p) => PLATFORM_NAME[p] || p).join(', ') : 'nothing connected'}
+        <span className={'cp-pill ' + (publicNames.length ? 'ok' : 'err')}>
+          Posting publicly to: {publicNames.length ? publicNames.join(', ') : 'nothing yet'}
         </span>
+        {waitingNames.length > 0 && (
+          <span className="cp-pill warn">Waiting for public posting: {waitingNames.join(', ')}</span>
+        )}
         <span className="cp-pill ok">Sounds in circulation: {c.sounds_circulating === null ? '—' : c.sounds_circulating}</span>
       </div>
 
@@ -201,6 +209,15 @@ export function AutopilotCard({ goTo }) {
         <p className="cp-muted" style={{ marginTop: 10 }}>
           New videos are prepared by the video worker on your PC - start it to let them through:
           <code> cd D:\Projects\sams-social-system\video &amp;&amp; node render-worker.mjs --watch</code>
+        </p>
+      )}
+      {waitingNames.length > 0 && (
+        <p className="cp-muted" style={{ marginTop: 10 }}>
+          {waitingNames.join(' and ')} {waitingNames.length > 1 ? 'do' : 'does'} not allow public posts from this system yet
+          (each platform has to approve the posting app first).
+          {waitingPosts.length > 0 && (
+            <> Approved posts waiting here: {waitingPosts.map(([p, n]) => n + ' ' + (PLATFORM_NAME[p] || p)).join(', ')} - nothing is lost; they go out as soon as {waitingNames.length > 1 ? 'those platforms allow it' : 'it allows it'}.</>
+          )}
         </p>
       )}
       {ap.activity && (

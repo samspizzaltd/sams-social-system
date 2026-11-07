@@ -3,6 +3,7 @@ const path = require('path');
 const db = require('../database/db');
 const brandConfig = require('./brandConfig');
 const claude = require('./claudeClient');
+const publicRoute = require('./publicRoute');
 
 // Autopilot (owner request 2026-11-06): "I have provided you with many videos
 // that are ready for publishing - add your magic when publishing them, and
@@ -644,10 +645,26 @@ async function status(schedulerStatus) {
   const cfg = await brandConfig.get();
   const on = await isOn();
   const switchRow = await db.query("SELECT updated_at FROM branding WHERE cfg_key = 'system_enabled'");
+  // Posts for a platform that does not show this system's posts publicly yet
+  // wait (publicRoute.js): they are counted apart, never as "scheduled".
+  const waitingFor = publicRoute.waitingPlatforms();
+  const goesOut = waitingFor.length
+    ? ' AND (q.creation_id IS NOT NULL OR q.platform NOT IN (' + waitingFor.map(() => '?').join(',') + '))'
+    : '';
   const nextUp = await db.query(
     "SELECT q.id, q.platform, q.scheduled_at, m.title AS media_title FROM publish_queue q LEFT JOIN media m ON m.id = q.media_id" +
-    " WHERE q.status = 'approved_publishing' ORDER BY COALESCE(q.scheduled_at, 0) ASC, q.id ASC LIMIT 1"
+    " WHERE q.status = 'approved_publishing'" + goesOut + ' ORDER BY COALESCE(q.scheduled_at, 0) ASC, q.id ASC LIMIT 1',
+    waitingFor
   );
+  const waitingRows = waitingFor.length
+    ? await db.query(
+      "SELECT platform, COUNT(*) AS n FROM publish_queue WHERE status = 'approved_publishing' AND creation_id IS NULL" +
+      ' AND platform IN (' + waitingFor.map(() => '?').join(',') + ') GROUP BY platform',
+      waitingFor
+    )
+    : [];
+  const waitingRoute = {};
+  for (const r of waitingRows || []) waitingRoute[r.platform] = Number(r.n);
   const last = await db.query(
     "SELECT id, platform, permalink, published_at FROM publish_queue WHERE status = 'published' ORDER BY published_at DESC, id DESC LIMIT 1"
   );
@@ -662,6 +679,8 @@ async function status(schedulerStatus) {
     worker_last_seen_s: state.workerSeenAt ? Math.round((now - state.workerSeenAt) / 1000) : null,
     claude: claude.status().available,
     connected,
+    // connected platforms that do not show this system's posts publicly yet
+    waiting_platforms: connected.filter((p) => waitingFor.includes(p)),
     settings: {
       publish_slots: parseSlots(cfg.publish_slots).map((m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0')),
       sound_mode: String(cfg.sound_mode || 'rotate'),
@@ -673,7 +692,10 @@ async function status(schedulerStatus) {
       preparing: await count("SELECT COUNT(*) AS n FROM media_prep WHERE status IN ('queued','analyzing','writing','rendering')"),
       failed: await count("SELECT COUNT(*) AS n FROM media_prep WHERE status = 'failed'"),
       awaiting_review: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'pending_review'"),
-      scheduled: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'approved_publishing'"),
+      scheduled: await count("SELECT COUNT(*) AS n FROM publish_queue q WHERE q.status = 'approved_publishing'" + goesOut, waitingFor),
+      // {tiktok: n, youtube: m} - approved posts waiting for the platform to
+      // allow public posting from this system (see publicRoute.js)
+      waiting_route: waitingRoute,
       publishing: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'publishing'"),
       published_24h: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'published' AND published_at > NOW() - INTERVAL 1 DAY"),
       published_total: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'published'"),

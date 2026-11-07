@@ -4,6 +4,7 @@ const metaPublish = require('./metaPublish');
 const tiktokPublish = require('./tiktokPublish');
 const youtubePublish = require('./youtubePublish');
 const autopilot = require('./autopilot');
+const publicRoute = require('./publicRoute');
 
 // Two background loops:
 //  1. Cycle scheduler - runs an autonomous cycle at the owner-configured
@@ -315,9 +316,20 @@ async function finisherTick() {
     try {
       await sweepStalePublishing();
 
+      // Posts for a platform that does not yet show this system's posts
+      // publicly wait (publicRoute.js) - left out here, they are neither
+      // attempted nor re-slotted. An upload already under way (creation_id)
+      // is still watched to the end.
+      const waitingFor = publicRoute.waitingPlatforms();
       const rows = await db.query(
         "SELECT q.*, m.url_path, m.filename FROM publish_queue q LEFT JOIN media m ON m.id = q.media_id " +
-        "WHERE q.status = 'approved_publishing' ORDER BY q.created_at ASC LIMIT 50"
+        "WHERE q.status = 'approved_publishing'" +
+        (waitingFor.length
+          ? " AND (q.creation_id IS NOT NULL OR q.platform NOT IN (" + waitingFor.map(() => '?').join(',') + '))'
+          : '') +
+        // Uploads under way first (they must be watched), then the earliest due.
+        ' ORDER BY (q.creation_id IS NULL) ASC, COALESCE(q.scheduled_at, 0) ASC, q.created_at ASC LIMIT 50',
+        waitingFor
       );
       if (!rows || !rows.length) return;
 

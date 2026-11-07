@@ -402,6 +402,9 @@ export function PublishQueue() {
     if (q.status === 'approved_publishing') {
       const committed = q.creation_id && COMMIT_ON_UPLOAD.includes(q.platform);
       if (committed || q.creation_id) return 'publishing';
+      // TikTok / YouTube do not show this system's posts publicly yet - the
+      // post waits instead of being refused or locked Private.
+      if (q.waiting_route) return 'approved - waiting until ' + (PLATFORM_NAME[q.platform] || q.platform) + ' allows public posting';
       if (systemOn === false) return 'approved - waiting (system OFF)';
       if (q.scheduled_at && Number(q.scheduled_at) > Date.now()) return 'scheduled ' + fmtSlot(q.scheduled_at);
       return 'publishing soon';
@@ -575,7 +578,7 @@ export function PublishQueue() {
           <button className="cp-btn small ghost" disabled={busy === q.id}
             onClick={() => setEditing({ id: q.id, caption: q.caption })}>Edit caption</button>
         )}
-        {q.status === 'approved_publishing' && !q.creation_id && q.scheduled_at && Number(q.scheduled_at) > Date.now() && (
+        {q.status === 'approved_publishing' && !q.creation_id && !q.waiting_route && q.scheduled_at && Number(q.scheduled_at) > Date.now() && (
           <ConfirmButton className="cp-btn small ghost" disabled={busy === q.id}
             label="Publish now instead" confirmLabel="Publish for real?"
             onConfirm={() => act(q.id, 'now')} />

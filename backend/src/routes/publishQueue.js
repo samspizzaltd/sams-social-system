@@ -3,6 +3,7 @@ const db = require('../database/db');
 const tiktokPublish = require('../services/tiktokPublish');
 const youtubePublish = require('../services/youtubePublish');
 const autopilot = require('../services/autopilot');
+const publicRoute = require('../services/publicRoute');
 
 // The publish review queue: the ONLY path content takes to the real accounts.
 // Staging is harmless; a row goes public only after the owner clicks Approve
@@ -61,6 +62,10 @@ router.get('/publish-queue', async (req, res) => {
     rows = await db.query(base + ' WHERE q.status = ? ORDER BY q.created_at ASC LIMIT 100', [status]);
   }
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  for (const q of rows) {
+    // Why an approved post is not going out (see services/publicRoute.js)
+    q.waiting_route = q.status === 'approved_publishing' && !q.creation_id ? publicRoute.reason(q.platform) : null;
+  }
   res.json({ queue: rows });
 });
 
@@ -122,16 +127,20 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!rows.affectedRows) return res.status(409).json({ error: 'Not in an approvable state' });
   const on = await autopilot.isOn();
+  const waits = publicRoute.reason(row[0].platform);
   res.json({
     ok: true,
     status: 'approved_publishing',
     scheduled_at: scheduledAt,
     system_on: on,
-    note: !on
-      ? 'Approved. The system is switched OFF, so it waits - switch it ON on the Dashboard to let it publish.'
-      : scheduledAt
-        ? 'Approved for the next posting slot.'
-        : 'Publishing runs in the background - watch this row for the permalink'
+    waiting_route: waits,
+    note: waits
+      ? 'Approved. ' + waits + '.'
+      : !on
+        ? 'Approved. The system is switched OFF, so it waits - switch it ON on the Dashboard to let it publish.'
+        : scheduledAt
+          ? 'Approved for the next posting slot.'
+          : 'Publishing runs in the background - watch this row for the permalink'
   });
 });
 

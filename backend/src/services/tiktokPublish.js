@@ -189,10 +189,18 @@ async function startPost(filename, caption, options, persistId) {
   }
   if (!init.data || !init.data.publish_id || (init.error && init.error.code !== 'ok')) {
     const msg = (init.error && init.error.message) || 'init returned an unrecognized response';
-    // TikTok answers a non-private post from an unaudited app with a bare
-    // link to its guidelines - say what actually went wrong.
+    // TikTok answers an unaudited app with a bare link to its guidelines -
+    // say what actually went wrong. An app that has not passed TikTok's
+    // Direct Post audit may only post to a PRIVATE TikTok account (code
+    // unaudited_client_can_only_post_to_private_accounts) - "Only me" on the
+    // post is not enough when the account itself is public.
     if (/integration guidelines|content-sharing-guidelines/i.test(msg) || (init.error && init.error.code === 'unaudited_client_can_only_post_to_private_accounts')) {
-      return { ok: false, error: 'TikTok refused: until the app passes TikTok review, posts must be "Only me (private)". Approve again and pick that. (TikTok said: ' + msg + ')' };
+      return {
+        ok: false,
+        error: privacy === 'SELF_ONLY'
+          ? 'TikTok refused: an app TikTok has not approved may only post to a PRIVATE TikTok account, and this account is public. Nothing was posted. (TikTok said: ' + msg + ')'
+          : 'TikTok refused: an app TikTok has not approved may only post "Only me" videos, and only to a private account. Nothing was posted. (TikTok said: ' + msg + ')'
+      };
     }
     return { ok: false, error: msg };
   }
