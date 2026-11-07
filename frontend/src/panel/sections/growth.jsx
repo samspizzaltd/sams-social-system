@@ -225,12 +225,15 @@ function TikTokRouteCard({ connected }) {
         (paste the caption, pick who can watch - about 30 seconds), and it is public like any post you make yourself.
       </p>
       {route === null ? <Loading /> : (
-        <label className="cp-setting">Approved TikTok posts
-          <select value={route} disabled={busy} onChange={(e) => saveRoute(e.target.value)}>
-            <option value="wait">Wait until TikTok approves public posting</option>
-            <option value="drafts">Send them to my TikTok drafts at their posting slot</option>
-          </select>
-        </label>
+        <div className="cp-setting">
+          <label htmlFor="tiktok-route">Approved TikTok posts</label>
+          <div className="cp-setting-row">
+            <select id="tiktok-route" value={route} disabled={busy} onChange={(e) => saveRoute(e.target.value)}>
+              <option value="wait">Wait until TikTok approves public posting</option>
+              <option value="drafts">Send them to my TikTok drafts at their posting slot</option>
+            </select>
+          </div>
+        </div>
       )}
       <div className="cp-content-actions" style={{ marginTop: 10 }}>
         <ConfirmButton className="cp-btn small ghost" disabled={busy || !connected}
