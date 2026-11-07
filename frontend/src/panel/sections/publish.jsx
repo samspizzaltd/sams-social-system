@@ -313,7 +313,7 @@ export function PublishQueue() {
     setError(null);
     try {
       await navigator.clipboard.writeText(String(q.caption || ''));
-      setNotice('#' + q.id + ': caption copied - open the draft in TikTok and paste it.');
+      setNotice('#' + q.id + ': caption copied - open the video from your TikTok inbox and paste it.');
     } catch {
       setError('Could not copy automatically - press and hold the caption text to copy it.');
     }
@@ -416,7 +416,7 @@ export function PublishQueue() {
   }
 
   const statusLabel = (q) => {
-    if (q.status === 'in_drafts') return 'in your TikTok drafts - post it from the TikTok app';
+    if (q.status === 'in_drafts') return 'in your TikTok inbox - post it from the TikTok app';
     if (q.status === 'approved_publishing') {
       const committed = q.creation_id && COMMIT_ON_UPLOAD.includes(q.platform);
       if (committed || q.creation_id) return 'publishing';
@@ -462,7 +462,7 @@ export function PublishQueue() {
         <p className="cp-muted" style={{ margin: '6px 0' }}>Each post goes out with the caption shown above it.</p>
         {tiktokDrafts && pending.some((q) => q.platform === 'tiktok') && (
           <p className="cp-muted" style={{ margin: '6px 0' }}>
-            TikTok: at its slot the video goes to your TikTok drafts - you get a TikTok notification, paste the caption and post it from the TikTok app.
+            TikTok: at its slot the video arrives in your TikTok inbox (Inbox → System notifications) - tap it, paste the caption and post it from the TikTok app.
           </p>
         )}
         <div className="cp-form">
@@ -557,11 +557,11 @@ export function PublishQueue() {
         <span className={`cp-pill ${STATUS_PILL[q.status] || 'warn'}`}>{statusLabel(q)}</span>
       </div>
       {q.platform === 'tiktok' && tiktokDrafts && ['pending_review', 'failed', 'approved_publishing'].includes(q.status) && (
-        <p className="cp-muted" style={{ margin: '4px 0' }}>Goes to your TikTok drafts at its slot - you post it from the TikTok app.</p>
+        <p className="cp-muted" style={{ margin: '4px 0' }}>Arrives in your TikTok inbox at its slot (Inbox → System notifications) - you post it from the TikTok app.</p>
       )}
       {q.status === 'in_drafts' && (
         <p className="cp-muted" style={{ margin: '4px 0' }}>
-          In your TikTok inbox: open the TikTok notification, paste the caption (Copy caption), pick who can watch, post. The system notices within about 10 minutes.
+          In your TikTok inbox: TikTok → Inbox → System notifications → tap the video, paste the caption (Copy caption), pick who can watch, post. It is not in your profile's Drafts folder. The system notices the post within about 10 minutes.
         </p>
       )}
       {q.platform === 'youtube' && parseJson(q.post_options) && parseJson(q.post_options).title && (

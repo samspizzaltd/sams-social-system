@@ -143,7 +143,7 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
     note: waits
       ? 'Approved. ' + waits + '.'
       : row[0].platform === 'tiktok' && routes.tiktok === 'drafts'
-        ? 'Approved. ' + (scheduledAt ? 'At its slot' : 'Right away') + ' the video goes to your TikTok drafts - open the TikTok notification, paste the caption (Copy caption here) and post it.' +
+        ? 'Approved. ' + (scheduledAt ? 'At its slot' : 'Right away') + ' the video arrives in your TikTok inbox (Inbox → System notifications) - tap it, paste the caption (Copy caption here) and post it.' +
           (on ? '' : ' The system is OFF, so it waits until you switch it ON.')
       : !on
         ? 'Approved. The system is switched OFF, so it waits - switch it ON on the Dashboard to let it publish.'
@@ -192,7 +192,7 @@ router.post('/publish-queue/:id/posted', async (req, res) => {
     [req.params.id]
   );
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
-  if (!rows.affectedRows) return res.status(409).json({ error: 'This post is not waiting in your TikTok drafts - reload' });
+  if (!rows.affectedRows) return res.status(409).json({ error: 'This post is not waiting in your TikTok inbox - reload' });
   res.json({ ok: true, status: 'published' });
 });
 
@@ -214,7 +214,7 @@ router.post('/publish-queue/:id/drop', async (req, res) => {
     );
     if (gone === null) return res.status(503).json({ error: 'Database unavailable' });
     if (!gone.affectedRows) return res.status(409).json({ error: 'Row changed state - reload and look again' });
-    return res.json({ ok: true, status: 'dropped', note: 'Dropped. The video may still show up in your TikTok drafts - ignore it; nothing is posted unless you post it.' });
+    return res.json({ ok: true, status: 'dropped', note: 'Dropped. The video may still show up in your TikTok inbox - ignore it; nothing is posted unless you post it.' });
   }
   if (COMMIT_ON_UPLOAD.includes(r0.platform) && r0.creation_id && r0.status === 'approved_publishing') {
     const parked = await db.query(

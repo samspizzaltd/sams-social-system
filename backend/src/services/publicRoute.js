@@ -49,7 +49,7 @@ async function waitingPlatforms(r) {
 function reason(platform, r) {
   if (!r || r[platform] !== 'wait') return null;
   if (platform === 'tiktok') {
-    return 'TikTok does not allow public posts from this system yet - the post waits (or send TikTok posts to your TikTok drafts: Settings → Platform Connections)';
+    return 'TikTok does not allow public posts from this system yet - the post waits (or send TikTok posts to your TikTok inbox: Settings → Platform Connections)';
   }
   return (NAMES[platform] || platform) + ' does not allow public posts from this system yet - the post waits until it does';
 }

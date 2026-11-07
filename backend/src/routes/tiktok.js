@@ -149,7 +149,7 @@ function saveTestDraft(obj) {
 
 // POST /api/tiktok/test-draft {media_id?} - default: the newest autopilot edit
 apiRouter.post('/tiktok/test-draft', async (req, res) => {
-  if (testDraftRunning) return res.status(409).json({ error: 'A test draft is being sent right now - wait a minute' });
+  if (testDraftRunning) return res.status(409).json({ error: 'A test video is being sent right now - wait a minute' });
   const asked = Number(req.body && req.body.media_id);
   const rows = Number.isInteger(asked) && asked > 0
     ? await db.query("SELECT id, title, filename FROM media WHERE id = ? AND kind IN ('rendered','video') AND url_path IS NOT NULL", [asked])

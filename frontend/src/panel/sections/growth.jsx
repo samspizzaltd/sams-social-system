@@ -182,7 +182,7 @@ function TikTokRouteCard({ connected }) {
       await api.put('/api/settings', { key: 'tiktok_route', value });
       setRoute(value);
       setNotice(value === 'drafts'
-        ? 'On: at each posting slot the approved TikTok post goes to your TikTok drafts - you post it from the TikTok app.'
+        ? 'On: at each posting slot the approved TikTok post arrives in your TikTok inbox (Inbox → System notifications) - tap it and post it from the TikTok app.'
         : 'TikTok posts now wait until TikTok approves public posting.');
     } catch (e) {
       setError(e.response?.data?.error || e.message);
@@ -207,8 +207,8 @@ function TikTokRouteCard({ connected }) {
   const STATE_TEXT = {
     starting: 'being sent…',
     processing: 'TikTok is still processing it',
-    in_drafts: 'delivered to your TikTok drafts ✓',
-    posted: 'delivered - and posted from your drafts ✓',
+    in_drafts: 'waiting in your TikTok inbox (Inbox → System notifications) ✓',
+    posted: 'delivered - and you posted it ✓',
     failed: 'TikTok could not process it',
     refused: 'TikTok refused it',
     unreadable: 'TikTok status unreadable right now'
@@ -221,7 +221,7 @@ function TikTokRouteCard({ connected }) {
       {notice && <div className="cp-success">{notice}</div>}
       <p className="cp-muted">
         TikTok only lets an app post publicly by itself after TikTok audits it, and keeps that audit for apps made for the public.
-        What TikTok allows any app: sending the finished video to your TikTok drafts. You then post it from the TikTok app
+        What TikTok allows any app: sending the finished video to your TikTok inbox. It does not go into your profile's Drafts folder - TikTok shows it under Inbox → System notifications; tap it and post it from the TikTok app
         (paste the caption, pick who can watch - about 30 seconds), and it is public like any post you make yourself.
       </p>
       {route === null ? <Loading /> : (
@@ -230,19 +230,19 @@ function TikTokRouteCard({ connected }) {
           <div className="cp-setting-row">
             <select id="tiktok-route" value={route} disabled={busy} onChange={(e) => saveRoute(e.target.value)}>
               <option value="wait">Wait until TikTok approves public posting</option>
-              <option value="drafts">Send them to my TikTok drafts at their posting slot</option>
+              <option value="drafts">Send them to my TikTok inbox at their posting slot</option>
             </select>
           </div>
         </div>
       )}
       <div className="cp-content-actions" style={{ marginTop: 10 }}>
         <ConfirmButton className="cp-btn small ghost" disabled={busy || !connected}
-          label="Send a test draft" confirmLabel="Send the newest edit to my TikTok drafts?" onConfirm={sendTest} />
-        <button className="cp-btn small ghost" disabled={busy} onClick={loadTest}>Check the test draft</button>
+          label="Send a test video" confirmLabel="Send the newest edit to my TikTok inbox?" onConfirm={sendTest} />
+        <button className="cp-btn small ghost" disabled={busy} onClick={loadTest}>Check the test video</button>
       </div>
       {test && test.test && (
         <p className="cp-muted" style={{ marginTop: 6 }}>
-          Test draft: {test.test.title || 'video #' + test.test.media_id} - {STATE_TEXT[test.state] || test.state || '—'}
+          Test video: {test.test.title || 'video #' + test.test.media_id} - {STATE_TEXT[test.state] || test.state || '—'}
           {test.test.error ? ' - ' + test.test.error : ''}{test.detail ? ' - ' + test.detail : ''} ({fmtDate(test.test.at)})
         </p>
       )}

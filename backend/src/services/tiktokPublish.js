@@ -287,7 +287,7 @@ async function startDraft(filename, persistId) {
       return {
         ok: false,
         draftsFull: true,
-        error: 'Your TikTok drafts are full - TikTok keeps at most 5 waiting to be posted. Post (or delete) the drafts in your TikTok inbox; this one moved to the next slot.'
+        error: 'Your TikTok inbox already holds 5 videos waiting to be posted (TikTok\'s limit). Post them from Inbox → System notifications; this one moved to the next slot.'
       };
     }
     return { ok: false, error: 'TikTok refused the draft: ' + msg + (code && code !== 'ok' ? ' (' + code + ')' : '') };

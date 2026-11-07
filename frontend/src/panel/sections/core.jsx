@@ -157,7 +157,7 @@ export function AutopilotCard({ goTo }) {
   const waitingNames = (ap.waiting_platforms || []).map((p) => PLATFORM_NAME[p] || p);
   const waitingPosts = Object.entries(c.waiting_route || {}).filter(([, n]) => n > 0);
   const publicNames = (ap.connected || []).filter((p) => !(ap.waiting_platforms || []).includes(p))
-    .map((p) => (PLATFORM_NAME[p] || p) + (ap.routes && ap.routes[p] === 'drafts' ? ' (via your drafts)' : ''));
+    .map((p) => (PLATFORM_NAME[p] || p) + (ap.routes && ap.routes[p] === 'drafts' ? ' (via your TikTok inbox)' : ''));
 
   return (
     <div className={'cp-card cp-ap-card ' + (on ? 'on' : 'off')}>
@@ -224,9 +224,9 @@ export function AutopilotCard({ goTo }) {
       {c.in_drafts > 0 && (
         <p className="cp-muted" style={{ marginTop: 8 }}>
           <button type="button" className="cp-btn small" onClick={() => goTo('media', 'publish')}>
-            {c.in_drafts} in your TikTok drafts
+            {c.in_drafts} waiting in your TikTok inbox
           </button>{' '}
-          Open TikTok, paste the caption (Publish Queue → Needs you → Copy caption) and post {c.in_drafts === 1 ? 'it' : 'them'}.
+          Open TikTok → Inbox → System notifications, tap the video, paste the caption (Publish Queue → Needs you → Copy caption) and post {c.in_drafts === 1 ? 'it' : 'them'}.
         </p>
       )}
       {ap.activity && (
