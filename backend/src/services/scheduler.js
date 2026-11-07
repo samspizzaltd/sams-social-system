@@ -33,6 +33,11 @@ const COMMIT_ON_UPLOAD = ['tiktok', 'youtube'];
 const YT_INCOMPLETE_SETTLE_POLLS = 6;
 const STALE_PUBLISHING_MS = 10 * 60 * 1000;
 const MISSED_SLOT_MS = 2 * 3600 * 1000;
+// TikTok's inbox takes at most 5 unposted videos per 24 hours. A post that
+// meets a full inbox keeps its approval and tries again this often - it goes
+// in once the owner posts a waiting video or the oldest leaves the 24 h window.
+const INBOX_FULL_RETRY_MS = 30 * 60 * 1000;
+const INBOX_FULL_NOTE = 'TikTok inbox full (max 5 unposted videos per 24 h): post the waiting ones from TikTok → Inbox. This one retries every 30 min.';
 
 function tbilisiNow() {
   const d = new Date(Date.now() + TBILISI_OFFSET_MS);
@@ -212,12 +217,21 @@ async function processClaimedRow(row, routes) {
       return;
     }
     if (!start.ok && start.draftsFull) {
-      // TikTok keeps at most 5 unposted drafts. Nothing was uploaded: keep the
-      // approval and move the post to the next free slot.
-      const next = await autopilot.nextFreeSlot(row.platform);
-      await bumpClaimed(row.id, "status = 'approved_publishing', scheduled_at = ?, error = ?", [next, start.error]);
-      console.log('[scheduler] row #' + row.id + ' TikTok drafts full - moved to ' + new Date(next).toISOString());
-      return;
+      // TikTok's inbox is full. Nothing was uploaded: keep the approval and
+      // try again in 30 minutes. Every other TikTok post already due waits for
+      // the same retry, so TikTok gets one try per 30 minutes however many
+      // posts are waiting. (Until 2026-11-07 this moved the post to the next
+      // FREE slot - with every slot booked, the back of a week-long queue.)
+      const now = Date.now();
+      const retryAt = now + INBOX_FULL_RETRY_MS;
+      await bumpClaimed(row.id, "status = 'approved_publishing', scheduled_at = ?, error = ?", [retryAt, INBOX_FULL_NOTE]);
+      await db.query(
+        "UPDATE publish_queue SET scheduled_at = ?, error = ? WHERE platform = 'tiktok' AND status = 'approved_publishing'" +
+        ' AND creation_id IS NULL AND (scheduled_at IS NULL OR scheduled_at <= ?)',
+        [retryAt, INBOX_FULL_NOTE, now]
+      );
+      console.log('[scheduler] row #' + row.id + ' TikTok inbox full - retrying at ' + new Date(retryAt).toISOString());
+      return 'inbox_full';
     }
     if (!start.ok) {
       await bumpClaimed(row.id, "status = 'failed', error = ?, attempts = attempts + 1", [start.error]);
@@ -421,7 +435,10 @@ async function finisherTick() {
         return !r.scheduled_at || Number(r.scheduled_at) <= now;
       }).slice(0, 3);
 
+      // One "TikTok inbox full" answer covers every TikTok post in this tick.
+      let tiktokInboxFull = false;
       for (const row of due) {
+        if (tiktokInboxFull && row.platform === 'tiktok' && !row.creation_id) continue;
         // Atomic claim: only the tick that flips the status works the row.
         // This also loses gracefully to a concurrent Drop (drop only acts on
         // approved_publishing, so whichever lands first wins outright).
@@ -437,7 +454,7 @@ async function finisherTick() {
           [row.id]
         );
         if (!fresh || !fresh.length) continue;
-        await processClaimedRow(fresh[0], routes);
+        if ((await processClaimedRow(fresh[0], routes)) === 'inbox_full') tiktokInboxFull = true;
       }
     } catch (err) {
       state.lastError = 'finisher: ' + err.message;

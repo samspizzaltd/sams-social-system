@@ -287,7 +287,8 @@ async function startDraft(filename, persistId) {
       return {
         ok: false,
         draftsFull: true,
-        error: 'Your TikTok inbox already holds 5 videos waiting to be posted (TikTok\'s limit). Post them from Inbox → System notifications; this one moved to the next slot.'
+        // TikTok: "at most 5 pending shares within any 24-hour period".
+        error: 'TikTok inbox full (max 5 unposted videos per 24 h): post the waiting ones from TikTok → Inbox → System notifications.'
       };
     }
     return { ok: false, error: 'TikTok refused the draft: ' + msg + (code && code !== 'ok' ? ' (' + code + ')' : '') };

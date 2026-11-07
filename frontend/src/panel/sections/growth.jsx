@@ -235,9 +235,17 @@ function TikTokRouteCard({ connected }) {
           </div>
         </div>
       )}
+      {route === 'drafts' && (
+        <p className="cp-muted">
+          TikTok takes at most 5 videos in 24 hours that you have not posted yet. Post each one when it arrives - when the inbox is full,
+          the next post waits and tries again every 30 minutes. The test button is off while posts go to your inbox: every test takes one of those 5 places.
+        </p>
+      )}
       <div className="cp-content-actions" style={{ marginTop: 10 }}>
-        <ConfirmButton className="cp-btn small ghost" disabled={busy || !connected}
-          label="Send a test video" confirmLabel="Send the newest edit to my TikTok inbox?" onConfirm={sendTest} />
+        {route === 'wait' && (
+          <ConfirmButton className="cp-btn small ghost" disabled={busy || !connected}
+            label="Send a test video" confirmLabel="Send the newest edit to my TikTok inbox?" onConfirm={sendTest} />
+        )}
         <button className="cp-btn small ghost" disabled={busy} onClick={loadTest}>Check the test video</button>
       </div>
       {test && test.test && (
