@@ -72,11 +72,14 @@ async function doRefresh(acc) {
     // Only a definitive grant failure may kill the connection (revoked access,
     // or a Testing-mode consent screen's 7-day refresh-token expiry).
     if (String(j.error || '') === 'invalid_grant') {
+      // Access revoked (or expired): the tokens are useless - drop them now;
+      // dailyCheck() deletes the rest of the row within 7 days (YouTube API
+      // Services Developer Policies).
       await db.query(
-        "UPDATE accounts SET status = 'expired' WHERE id = ? AND refresh_token = ?",
+        "UPDATE accounts SET status = 'expired', access_token = '', refresh_token = NULL, expires_at = NULL WHERE id = ? AND refresh_token = ?",
         [acc.id, acc.refresh_token]
       );
-      console.warn('[youtube] refresh token no longer valid - account marked expired');
+      console.warn('[youtube] refresh token no longer valid - account marked expired, tokens deleted');
     } else {
       console.warn('[youtube] token refresh rejected (transient?): ' + String(j.error || 'no access_token'));
     }
@@ -108,6 +111,52 @@ async function account() {
     const ms = row.expires_at ? new Date(String(row.expires_at).replace(' ', 'T')).getTime() : 0;
     return ms > Date.now() ? row : null;
   });
+}
+
+// ---------- YouTube API data rules (Developer Policies) ----------
+// The owner can revoke the Service's access at any time in his Google Account
+// (https://security.google.com/settings/security/permissions). Once a day the
+// token is checked (Google answers invalid_grant once access was revoked), and
+// the stored data of a revoked, expired or disconnected channel is deleted
+// within 7 days - here after 6.
+let lastDailyCheck = 0;
+async function dailyCheck() {
+  if (Date.now() - lastDailyCheck < 24 * 3600 * 1000) return;
+  lastDailyCheck = Date.now();
+  try {
+    await account(); // refreshes a stale token - and notices a revocation
+    await db.query(
+      "DELETE FROM accounts WHERE platform = 'youtube' AND status IN ('expired','disconnected') AND updated_at < (NOW() - INTERVAL 6 DAY)"
+    );
+  } catch (err) {
+    console.warn('[youtube] daily check failed: ' + err.message);
+  }
+}
+
+// Disconnect = revoke the grant at Google, then delete every stored YouTube
+// token and channel record. Deletion happens even if Google cannot be reached.
+async function revokeAndDelete() {
+  const rows = await db.query("SELECT id, access_token, refresh_token FROM accounts WHERE platform = 'youtube'");
+  if (rows === null) return { ok: false, error: 'Database unavailable' };
+  let revoked = false;
+  for (const r of rows) {
+    const token = r.refresh_token || r.access_token;
+    if (!token) continue;
+    try {
+      const res = await fetch('https://oauth2.googleapis.com/revoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token }),
+        signal: AbortSignal.timeout(15 * 1000)
+      });
+      if (res.ok) revoked = true; // 400 = already revoked / no longer valid
+    } catch (err) {
+      console.warn('[youtube] revoke call failed (data is deleted anyway): ' + err.message);
+    }
+  }
+  const del = await db.query("DELETE FROM accounts WHERE platform = 'youtube'");
+  if (del === null) return { ok: false, error: 'Database unavailable' };
+  return { ok: true, revoked, deleted: del.affectedRows };
 }
 
 // The connected channel, shown in the panel and the approve sheet so a post
@@ -319,4 +368,7 @@ async function tryFinish(sessionUrl, filename) {
   return { ok: false, error: 'status check returned HTTP ' + r.status };
 }
 
-module.exports = { account, appAudited, channelInfo, startPost, tryFinish, PRIVACY };
+module.exports = {
+  account, appAudited, channelInfo, startPost, tryFinish, dailyCheck, revokeAndDelete, PRIVACY,
+  _resetDailyCheck: () => { lastDailyCheck = 0; } // tests only
+};

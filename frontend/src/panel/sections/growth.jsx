@@ -132,11 +132,21 @@ function ConnectionsView() {
             </td>
             <td>
               {youtube && youtube.channel_id && youtube.status !== 'disconnected'
-                ? <ConfirmButton className="cp-btn small ghost" label="Disconnect" confirmLabel="Really disconnect?" onConfirm={disconnectYouTube} />
+                ? <ConfirmButton className="cp-btn small ghost" label="Disconnect" confirmLabel="Revoke access + delete data?" onConfirm={disconnectYouTube} />
                 : <button className="cp-btn small" disabled={!!(youtube && (youtube.unavailable || !youtube.configured))} onClick={connectYouTube}>Connect YouTube</button>}
               {ytConnectUrl && !(youtube && youtube.connected) && (
                 <div><a href={ytConnectUrl} target="_blank" rel="noopener noreferrer" onClick={() => setYtConnectUrl(null)}>Open Google login</a></div>
               )}
+            </td>
+          </tr>
+          <tr>
+            <td colSpan={4} className="cp-muted" style={{ fontSize: 13 }}>
+              YouTube uploads use YouTube API Services - connecting means you agree to the{' '}
+              <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer">YouTube Terms of Service</a>; see also the{' '}
+              <a href="http://www.google.com/policies/privacy" target="_blank" rel="noopener noreferrer">Google Privacy Policy</a> and our{' '}
+              <a href="/privacy.html" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.
+              Disconnect revokes the access at Google and deletes the stored YouTube data; you can also revoke it in your{' '}
+              <a href="https://security.google.com/settings/security/permissions" target="_blank" rel="noopener noreferrer">Google Account security settings</a>.
             </td>
           </tr>
         </tbody>

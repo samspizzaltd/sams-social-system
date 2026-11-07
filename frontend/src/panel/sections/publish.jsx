@@ -532,6 +532,8 @@ export function PublishQueue() {
               {gs.yt.channel && (
                 <p className="cp-muted" style={{ margin: '4px 0' }}>
                   YouTube uploads to <strong>{gs.yt.channel.title}</strong>{gs.yt.audited ? '' : ' - Private only until Google audits our project.'}
+                  {' '}By uploading you agree to the{' '}
+                  <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer">YouTube Terms of Service</a>.
                 </p>
               )}
             </>
@@ -668,6 +670,10 @@ export function PublishQueue() {
                 {whenSelect(ytSheet, setYtSheet)}
               </div>
               <p className="cp-muted" style={{ margin: '6px 0' }}>The caption above becomes the video description. Marked "not made for kids".</p>
+              <p className="cp-muted" style={{ margin: '6px 0' }}>
+                By uploading you agree to the{' '}
+                <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer">YouTube Terms of Service</a>.
+              </p>
             </>
           )}
           <div className="cp-content-actions">

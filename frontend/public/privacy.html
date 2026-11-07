@@ -11,6 +11,7 @@
   h1 { color: var(--brand); font-size: 1.9rem; margin-bottom: .2em; }
   h2 { font-size: 1.15rem; margin-top: 1.8em; }
   .meta { color: var(--muted); font-size: .9rem; }
+  .box { border: 1px solid #f3c9b6; background: #fff7f3; border-radius: 8px; padding: 12px 16px; }
   footer { margin-top: 3em; color: var(--muted); font-size: .9rem; border-top: 1px solid #eee; padding-top: 1em; }
   a { color: var(--brand); }
   ul { padding-left: 1.2em; }
@@ -18,56 +19,99 @@
 </head>
 <body>
 <h1>Privacy Policy</h1>
-<p class="meta">Sam's Social Studio — effective 13 October 2026</p>
+<p class="meta">Sam's Social Studio — effective 7 November 2026 (replaces the version of 13 October 2026)</p>
 
 <p>Sam's Social Studio ("the Service") is a social media management application
 operated by <strong>Sam's Pizza Ltd</strong> (შპს „სემის პიცა“, company ID 406255127,
-100 Mirian Mepe St, Tbilisi, Georgia). It manages the social media accounts owned
-by Sam's Pizza Ltd. This policy explains what data the Service handles.</p>
+100 Mirian Mepe St, Tbilisi, Georgia). It is an internal business tool: it prepares
+and publishes the business's own videos to the social media accounts owned by
+Sam's Pizza Ltd (Instagram, Facebook, TikTok and YouTube). This policy explains
+what data the Service handles.</p>
 
-<h2>1. Data the Service accesses</h2>
-<p>When the business owner connects a social media account (for example a TikTok,
-Instagram or Facebook account) through the platform's official authorization flow,
-the Service receives and stores:</p>
+<h2>1. YouTube API Services</h2>
+<div class="box">
+<p>The Service uses <strong>YouTube API Services</strong> to upload the business's
+own videos to the business's own YouTube channel, after the channel owner has
+approved each video. By connecting a YouTube channel to the Service, the channel
+owner agrees to be bound by the
+<a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>.
+Google's handling of data is described in the
+<a href="http://www.google.com/policies/privacy">Google Privacy Policy</a>.</p>
+<p>The channel owner can revoke the Service's access to the YouTube channel at any
+time from the Google Account security settings page:
+<a href="https://security.google.com/settings/security/permissions">https://security.google.com/settings/security/permissions</a>,
+or with the "Disconnect" button in the Service's control panel.</p>
+</div>
+
+<h2>2. Data the Service accesses</h2>
+<p>When the business owner connects one of the business's accounts through the
+platform's official authorization flow, the Service receives and stores:</p>
 <ul>
-  <li>the connected account's basic profile information (account ID, display name, avatar);</li>
-  <li>an access token issued by the platform, used solely to act on that account;</li>
-  <li>metadata about the business's own posts (IDs, captions, view counts and similar
-      statistics) used for scheduling and performance reporting.</li>
+  <li><strong>YouTube</strong> (through YouTube API Services, with the channel owner's
+      Google OAuth consent): the connected channel's ID and title, used only to show
+      which channel videos go to; and the OAuth access and refresh tokens Google issues
+      for the permissions "upload videos" (youtube.upload) and "view your YouTube
+      account" (youtube.readonly). The Service also records the ID and link of each
+      video it uploaded. It does not read the channel's other videos, comments,
+      subscribers, analytics, or any data about viewers.</li>
+  <li><strong>TikTok, Instagram, Facebook</strong>: the connected account's basic
+      profile information (account ID, display name, avatar), the access token the
+      platform issues, and metadata about the business's own posts (IDs, captions,
+      view counts and similar statistics) used for scheduling and reporting.</li>
 </ul>
 
-<h2>2. Data the Service does NOT collect</h2>
-<p>The Service has no public user base. It does not collect personal data from
-platform users, followers, commenters or website visitors. It does not track,
-profile or advertise to individuals, and it does not sell or share data with
-third parties.</p>
+<h2>3. Data the Service does NOT collect</h2>
+<p>The Service has no public user base and no public sign-up. It does not collect
+personal data from platform users, followers, commenters, viewers or website
+visitors. It does not track, profile or advertise to individuals, it does not sell
+data, and it does not let third parties serve content or advertising, or place or
+read cookies, in its pages. The control panel keeps its own login session in the
+browser's local storage only.</p>
 
-<h2>3. How data is used</h2>
+<h2>4. How data is used</h2>
 <p>Stored tokens and account data are used only to upload and publish the
-business's own marketing content to the business's own accounts, and to read
-the performance statistics of that content. Every post is approved by the
-business owner before publishing.</p>
+business's own content to the business's own accounts, to show which account a
+post goes to, to confirm that an upload finished, and to read the performance
+statistics of the business's own posts. Every post is approved by the business
+owner before it is published.</p>
 
-<h2>4. Storage and security</h2>
+<h2>5. Sharing</h2>
+<p>Data is not shared with, or sold to, anyone. To do its work the Service sends
+data only to:</p>
+<ul>
+  <li>the platforms' official APIs — YouTube API Services (Google), TikTok and Meta —
+      to perform the actions described above;</li>
+  <li>Anthropic (the Claude API), which receives a few still frames and the title of
+      the business's own videos to draft captions. No YouTube API data, no tokens and
+      no personal data are sent to Anthropic.</li>
+</ul>
+
+<h2>6. Storage and security</h2>
 <p>Data is stored on the Service's own server infrastructure in access-controlled
-databases. Access tokens are never displayed in the interface and are reachable
-only by the Service's backend. Access to the Service requires authentication.</p>
+databases. Tokens are never displayed in the interface and are reachable only by
+the Service's backend. Access to the Service requires authentication.</p>
 
-<h2>5. Retention and deletion</h2>
-<p>Account data and tokens are kept only while the account stays connected.
-Disconnecting an account in the control panel, or revoking the app's access in
-the platform's own settings, invalidates the stored token; stored account data
-is deleted on request to the contact below.</p>
+<h2>7. Retention and deletion</h2>
+<ul>
+  <li><strong>YouTube:</strong> "Disconnect" in the control panel revokes the
+      Service's access at Google and deletes the stored tokens and channel data
+      immediately. If access is revoked from the Google Account instead, the Service
+      notices it within a day, deletes the tokens at once and the remaining channel
+      data within 7 days.</li>
+  <li><strong>Other platforms:</strong> account data and tokens are kept only while
+      the account stays connected. Disconnecting an account in the control panel, or
+      revoking the app's access in the platform's own settings, invalidates the
+      stored token.</li>
+  <li>Any stored data is deleted on request to the contact below.</li>
+</ul>
 
-<h2>6. Third parties</h2>
-<p>The Service communicates with the connected platforms' official APIs (TikTok,
-Meta) to perform the actions described above, and with no other third party.</p>
-
-<h2>7. Contact</h2>
+<h2>8. Contact</h2>
 <p>For any privacy question or deletion request: Sam's Pizza Ltd,
 100 Mirian Mepe St, Tbilisi, Georgia —
 <a href="mailto:issam.salih@gmail.com">issam.salih@gmail.com</a></p>
 
-<footer>© Sam's Pizza Ltd · <a href="/terms.html">Terms of Service</a></footer>
+<footer>© Sam's Pizza Ltd · <a href="/terms.html">Terms of Service</a> ·
+<a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a> ·
+<a href="http://www.google.com/policies/privacy">Google Privacy Policy</a></footer>
 </body>
 </html>

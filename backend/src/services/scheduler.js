@@ -370,6 +370,7 @@ async function finisherTick() {
     try {
       await sweepStalePublishing();
       await watchDrafts();
+      await youtubePublish.dailyCheck(); // once a day: revoked access, data deletion
 
       // Posts for a platform that does not yet show this system's posts
       // publicly wait (publicRoute.js) - left out here, they are neither

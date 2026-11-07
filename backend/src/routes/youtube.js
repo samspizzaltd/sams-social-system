@@ -123,10 +123,16 @@ apiRouter.get('/youtube/channel-info', async (req, res) => {
   });
 });
 
+// Disconnect revokes the grant at Google and deletes every stored YouTube
+// token and channel record (YouTube API Services Developer Policies).
 apiRouter.post('/youtube/disconnect', async (req, res) => {
-  const rows = await db.query("UPDATE accounts SET status = 'disconnected' WHERE platform = 'youtube'");
-  if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
-  res.json({ ok: true, note: 'Reconnect from the panel when ready - the next connect may bind a different channel' });
+  const r = await youtubePublish.revokeAndDelete();
+  if (!r.ok) return res.status(503).json({ error: r.error });
+  res.json({
+    ok: true,
+    revoked: r.revoked,
+    note: 'Disconnected: access revoked at Google and the stored YouTube data deleted. Reconnect from the panel when ready - the next connect may bind a different channel.'
+  });
 });
 
 // ---------- public OAuth side ----------
