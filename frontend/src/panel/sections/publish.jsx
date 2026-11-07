@@ -13,7 +13,7 @@ const fmtDate = (d) => {
 
 // Views over the queue; "Needs you" is what waits for the owner.
 const QUEUE_VIEWS = [
-  { id: 'needs', label: 'Needs you', test: (q) => ['pending_review', 'failed', 'unknown'].includes(q.status) },
+  { id: 'needs', label: 'Needs you', test: (q) => ['pending_review', 'failed', 'unknown', 'in_drafts'].includes(q.status) },
   { id: 'scheduled', label: 'Scheduled & publishing', test: (q) => ['approved_publishing', 'publishing'].includes(q.status) },
   { id: 'published', label: 'Published', test: (q) => q.status === 'published' },
   { id: 'dropped', label: 'Dropped', test: (q) => q.status === 'dropped' },
@@ -65,6 +65,7 @@ const STATUS_PILL = {
   approved_publishing: 'warn',
   publishing: 'warn',
   published: 'ok',
+  in_drafts: 'warn',
   failed: 'err',
   unknown: 'err',
   dropped: 'err'
@@ -91,6 +92,9 @@ export function PublishQueue() {
   const [view, setView] = useState('needs');
   // "Approve all" sheet for one video: every post of it that waits for review.
   const [groupSheet, setGroupSheet] = useState(null);
+  // How each platform's posts go out: direct | drafts (TikTok) | wait
+  const [routes, setRoutes] = useState({});
+  const tiktokDrafts = routes.tiktok === 'drafts';
 
   const load = useCallback(() => {
     api.get('/api/publish-queue')
@@ -98,6 +102,7 @@ export function PublishQueue() {
         if (!aliveRef.current) return; // response landed after unmount
         setError(null); // a stale failure banner must clear once polling recovers
         setQueue(r.data.queue);
+        setRoutes(r.data.routes || {});
         // Keep polling while anything is mid-publish (slower while rows only
         // wait for a later posting slot).
         const soon = Date.now() + 60000;
@@ -235,7 +240,8 @@ export function PublishQueue() {
     const pending = g.rows.filter((q) => q.status === 'pending_review');
     const yt = pending.find((q) => q.platform === 'youtube');
     const preset = yt ? parseJson(yt.post_options) : null;
-    const wantTk = pending.some((q) => q.platform === 'tiktok');
+    // Drafts route: who can watch etc. is chosen in the TikTok app itself.
+    const wantTk = pending.some((q) => q.platform === 'tiktok') && !tiktokDrafts;
     setError(null);
     setTkSheet(null);
     setYtSheet(null);
@@ -274,7 +280,7 @@ export function PublishQueue() {
     const failed = [];
     for (const q of rows) {
       const body = { when: gs.when };
-      if (q.platform === 'tiktok') {
+      if (q.platform === 'tiktok' && gs.tk) {
         Object.assign(body, {
           privacy_level: gs.tk.privacy_level,
           disable_comment: gs.tk.disable_comment,
@@ -300,6 +306,17 @@ export function PublishQueue() {
         (systemOn === false ? ' The system is OFF, so they wait until you switch it ON on the Dashboard.' : ''));
     }
     load();
+  };
+
+  // TikTok drafts carry no caption - the owner pastes it in the TikTok app.
+  const copyCaption = async (q) => {
+    setError(null);
+    try {
+      await navigator.clipboard.writeText(String(q.caption || ''));
+      setNotice('#' + q.id + ': caption copied - open the draft in TikTok and paste it.');
+    } catch {
+      setError('Could not copy automatically - press and hold the caption text to copy it.');
+    }
   };
 
   const saveCaption = async () => {
@@ -399,6 +416,7 @@ export function PublishQueue() {
   }
 
   const statusLabel = (q) => {
+    if (q.status === 'in_drafts') return 'in your TikTok drafts - post it from the TikTok app';
     if (q.status === 'approved_publishing') {
       const committed = q.creation_id && COMMIT_ON_UPLOAD.includes(q.platform);
       if (committed || q.creation_id) return 'publishing';
@@ -442,6 +460,11 @@ export function PublishQueue() {
       <div className="cp-card" style={{ marginTop: 10, background: 'var(--cp-bg, #faf7f4)' }}>
         <strong>Approve all {gs.ids.length} posts: {pending.map((q) => PLATFORM_NAME[q.platform] || q.platform).join(', ')}</strong>
         <p className="cp-muted" style={{ margin: '6px 0' }}>Each post goes out with the caption shown above it.</p>
+        {tiktokDrafts && pending.some((q) => q.platform === 'tiktok') && (
+          <p className="cp-muted" style={{ margin: '6px 0' }}>
+            TikTok: at its slot the video goes to your TikTok drafts - you get a TikTok notification, paste the caption and post it from the TikTok app.
+          </p>
+        )}
         <div className="cp-form">
           {whenSelect(gs, setGroupSheet)}
           {gs.tk && (gs.tk.loading ? <Loading /> : gs.tk.error ? (
@@ -531,6 +554,14 @@ export function PublishQueue() {
         <strong>{PLATFORM_NAME[q.platform] || q.platform} · #{q.id}</strong>
         <span className={`cp-pill ${STATUS_PILL[q.status] || 'warn'}`}>{statusLabel(q)}</span>
       </div>
+      {q.platform === 'tiktok' && tiktokDrafts && ['pending_review', 'failed', 'approved_publishing'].includes(q.status) && (
+        <p className="cp-muted" style={{ margin: '4px 0' }}>Goes to your TikTok drafts at its slot - you post it from the TikTok app.</p>
+      )}
+      {q.status === 'in_drafts' && (
+        <p className="cp-muted" style={{ margin: '4px 0' }}>
+          In your TikTok inbox: open the TikTok notification, paste the caption (Copy caption), pick who can watch, post. The system notices within about 10 minutes.
+        </p>
+      )}
       {q.platform === 'youtube' && parseJson(q.post_options) && parseJson(q.post_options).title && (
         <p className="cp-muted" style={{ margin: '4px 0' }}>Title: {parseJson(q.post_options).title}</p>
       )}
@@ -553,7 +584,7 @@ export function PublishQueue() {
           {q.permalink ? <> · <a href={q.permalink} target="_blank" rel="noreferrer">view post</a></> : null}
         </span>
         {['pending_review', 'failed'].includes(q.status) && (
-          q.platform === 'tiktok' ? (
+          q.platform === 'tiktok' && !tiktokDrafts ? (
             <button className="cp-btn small" disabled={busy === q.id} onClick={() => openTkSheet(q)}>
               {q.status === 'failed' ? 'Retry' : 'Approve…'}
             </button>
@@ -586,9 +617,16 @@ export function PublishQueue() {
         {q.status === 'unknown' && (
           <span className="cp-muted">Check the account before acting - this post may already be live.</span>
         )}
-        {['pending_review', 'failed', 'approved_publishing', 'unknown'].includes(q.status) && (
+        {q.status === 'in_drafts' && (
+          <>
+            <button className="cp-btn small" disabled={busy === q.id} onClick={() => copyCaption(q)}>Copy caption</button>
+            <ConfirmButton className="cp-btn small ghost" disabled={busy === q.id}
+              label="I posted it" confirmLabel="Posted on TikTok?" onConfirm={() => act(q.id, 'posted')} />
+          </>
+        )}
+        {['pending_review', 'failed', 'approved_publishing', 'unknown', 'in_drafts'].includes(q.status) && (
           <ConfirmButton className="cp-btn small ghost" disabled={busy === q.id}
-            label="Drop" confirmLabel="Really drop?" onConfirm={() => act(q.id, 'drop')} />
+            label={q.status === 'in_drafts' ? 'Not posting it' : 'Drop'} confirmLabel="Really drop?" onConfirm={() => act(q.id, 'drop')} />
         )}
       </div>
       {ytSheet && ytSheet.id === q.id && (

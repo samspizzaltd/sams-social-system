@@ -114,7 +114,7 @@ async function nextFreeSlot(platform) {
   const now = Date.now();
   const taken = await db.query(
     "SELECT scheduled_at FROM publish_queue WHERE platform = ? AND scheduled_at IS NOT NULL AND scheduled_at > ?" +
-    " AND status IN ('approved_publishing','publishing','published','unknown')",
+    " AND status IN ('approved_publishing','publishing','published','unknown','in_drafts')",
     [platform, now - 3600 * 1000]
   );
   const held = new Set((taken || []).map((r) => Number(r.scheduled_at)));
@@ -142,7 +142,7 @@ const ELIGIBLE_SQL =
   "FROM media m LEFT JOIN media_prep p ON p.media_id = m.id" +
   " WHERE m.kind = 'video' AND (m.url_path IS NOT NULL OR m.local_path IS NOT NULL) AND p.media_id IS NULL" +
   " AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.media_id = m.id" +
-  "   AND q.status IN ('approved_publishing','publishing','published','unknown'))" +
+  "   AND q.status IN ('approved_publishing','publishing','published','unknown','in_drafts'))" +
   " AND (NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.media_id = m.id)" +
   "   OR EXISTS (SELECT 1 FROM publish_queue q WHERE q.media_id = m.id AND q.status IN ('pending_review','failed')))";
 
@@ -466,7 +466,7 @@ async function stage(prep, outputMediaId) {
   // of this video meanwhile gets no second copy.
   const taken = await db.query(
     "SELECT DISTINCT platform FROM publish_queue WHERE media_id = ? AND prep_media_id IS NULL" +
-    " AND status IN ('approved_publishing','publishing','published','unknown')",
+    " AND status IN ('approved_publishing','publishing','published','unknown','in_drafts')",
     [prep.media_id]
   );
   const takenSet = new Set((taken || []).map((r) => r.platform));
@@ -647,7 +647,8 @@ async function status(schedulerStatus) {
   const switchRow = await db.query("SELECT updated_at FROM branding WHERE cfg_key = 'system_enabled'");
   // Posts for a platform that does not show this system's posts publicly yet
   // wait (publicRoute.js): they are counted apart, never as "scheduled".
-  const waitingFor = publicRoute.waitingPlatforms();
+  const routes = await publicRoute.routes();
+  const waitingFor = await publicRoute.waitingPlatforms(routes);
   const goesOut = waitingFor.length
     ? ' AND (q.creation_id IS NOT NULL OR q.platform NOT IN (' + waitingFor.map(() => '?').join(',') + '))'
     : '';
@@ -681,6 +682,8 @@ async function status(schedulerStatus) {
     connected,
     // connected platforms that do not show this system's posts publicly yet
     waiting_platforms: connected.filter((p) => waitingFor.includes(p)),
+    // how each platform's posts go out: direct | drafts (TikTok) | wait
+    routes,
     settings: {
       publish_slots: parseSlots(cfg.publish_slots).map((m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0')),
       sound_mode: String(cfg.sound_mode || 'rotate'),
@@ -696,6 +699,8 @@ async function status(schedulerStatus) {
       // {tiktok: n, youtube: m} - approved posts waiting for the platform to
       // allow public posting from this system (see publicRoute.js)
       waiting_route: waitingRoute,
+      // in the owner's TikTok drafts, waiting for him to post them in the app
+      in_drafts: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'in_drafts'"),
       publishing: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'publishing'"),
       published_24h: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'published' AND published_at > NOW() - INTERVAL 1 DAY"),
       published_total: await count("SELECT COUNT(*) AS n FROM publish_queue WHERE status = 'published'"),
@@ -713,7 +718,7 @@ async function status(schedulerStatus) {
 async function handStaged() {
   const rows = await db.query(
     "SELECT q.media_id," +
-    " MAX(q.status IN ('approved_publishing','publishing','published','unknown')) AS out_or_going," +
+    " MAX(q.status IN ('approved_publishing','publishing','published','unknown','in_drafts')) AS out_or_going," +
     " MAX(q.status IN ('pending_review','failed')) AS waiting" +
     " FROM publish_queue q JOIN media m ON m.id = q.media_id LEFT JOIN media_prep p ON p.media_id = q.media_id" +
     " WHERE m.kind = 'video' AND p.media_id IS NULL GROUP BY q.media_id"

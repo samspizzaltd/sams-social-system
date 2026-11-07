@@ -170,7 +170,7 @@ async function markPublished(row, result) {
   console.error('[scheduler] row #' + row.id + ' PUBLISHED but the result could not be saved - it will be parked as unknown');
 }
 
-async function processClaimedRow(row) {
+async function processClaimedRow(row, routes) {
   // A committed row (creation_id set) must reach its real outcome even if the
   // Library item was deleted meanwhile - only an uncommitted row may fail here.
   if (!row.url_path && !row.creation_id) {
@@ -186,8 +186,15 @@ async function processClaimedRow(row) {
 
   // Phase 1: no container yet -> create it, record it, return (poll next tick).
   if (!row.creation_id) {
+    // TikTok on the drafts route (publicRoute.js): the video goes to the
+    // owner's TikTok drafts and he posts it from the TikTok app.
+    const tiktokDrafts = row.platform === 'tiktok' && routes && routes.tiktok === 'drafts';
     const start = row.platform === 'instagram'
       ? await metaPublish.igCreateContainer(videoUrl, row.caption)
+      : tiktokDrafts
+        ? await tiktokPublish.startDraft(row.filename,
+            // Same rule as a direct post: the id is saved before any byte.
+            (publishId) => persistCreationId(row.id, publishId))
       : row.platform === 'tiktok'
         ? await tiktokPublish.startPost(row.filename, row.caption, postOptions,
             // Persist the publish id BEFORE any byte uploads: once bytes
@@ -202,6 +209,14 @@ async function processClaimedRow(row) {
     if (start.maybePublished) {
       // The platform may have registered the post request - never retry blind.
       console.error('[scheduler] row #' + row.id + ' start outcome UNKNOWN (' + start.error + ') - leaving for the sweeper');
+      return;
+    }
+    if (!start.ok && start.draftsFull) {
+      // TikTok keeps at most 5 unposted drafts. Nothing was uploaded: keep the
+      // approval and move the post to the next free slot.
+      const next = await autopilot.nextFreeSlot(row.platform);
+      await bumpClaimed(row.id, "status = 'approved_publishing', scheduled_at = ?, error = ?", [next, start.error]);
+      console.log('[scheduler] row #' + row.id + ' TikTok drafts full - moved to ' + new Date(next).toISOString());
       return;
     }
     if (!start.ok) {
@@ -286,7 +301,46 @@ async function processClaimedRow(row) {
     return;
   }
 
+  if (row.platform === 'tiktok' && result.inbox) {
+    // Delivered to the owner's TikTok drafts (SEND_TO_USER_INBOX). He posts
+    // it from the TikTok app; watchDrafts() notices when he has.
+    await bumpClaimed(row.id, "status = 'in_drafts', error = NULL, attempts = attempts + 1", []);
+    console.log('[scheduler] row #' + row.id + ' is in the TikTok drafts');
+    return;
+  }
+
   await markPublished(row, result);
+}
+
+// Posts sitting in the owner's TikTok drafts: TikTok reports PUBLISH_COMPLETE
+// once he has posted one from the TikTok app. Checked every 10 min, for about
+// a week (attempts counts the checks); the owner can also mark a post as
+// posted (or drop it) in the panel.
+const DRAFT_CHECK_EVERY_MIN = 10;
+const DRAFT_MAX_CHECKS = 1100;
+async function watchDrafts() {
+  const rows = await db.query(
+    "SELECT id, creation_id FROM publish_queue WHERE status = 'in_drafts' AND platform = 'tiktok' AND creation_id IS NOT NULL" +
+    ' AND attempts < ? AND updated_at < (NOW() - INTERVAL ' + DRAFT_CHECK_EVERY_MIN + ' MINUTE) ORDER BY updated_at ASC LIMIT 3',
+    [DRAFT_MAX_CHECKS]
+  );
+  for (const r of rows || []) {
+    const res = await tiktokPublish.tryFinish(r.creation_id);
+    if (res.ok && res.done && !res.inbox) {
+      const saved = await db.query(
+        "UPDATE publish_queue SET status = 'published', published_media_id = ?, permalink = ?, error = NULL, published_at = NOW(), attempts = attempts + 1" +
+        " WHERE id = ? AND status = 'in_drafts'",
+        [res.mediaId, res.permalink, r.id]
+      );
+      if (saved && saved.affectedRows) console.log('[scheduler] row #' + r.id + ' posted from the TikTok drafts');
+    } else {
+      // Not posted yet (or TikTok unreadable right now): look again later.
+      await db.query(
+        "UPDATE publish_queue SET attempts = attempts + 1, error = ?, updated_at = NOW() WHERE id = ? AND status = 'in_drafts'",
+        [res.ok ? null : 'draft status: ' + String(res.error || 'unreadable').slice(0, 200), r.id]
+      );
+    }
+  }
 }
 
 // Rows stuck in 'publishing' (crash mid-work, or a publish whose outcome
@@ -315,12 +369,14 @@ async function finisherTick() {
     state.finisherBusy = true;
     try {
       await sweepStalePublishing();
+      await watchDrafts();
 
       // Posts for a platform that does not yet show this system's posts
       // publicly wait (publicRoute.js) - left out here, they are neither
       // attempted nor re-slotted. An upload already under way (creation_id)
       // is still watched to the end.
-      const waitingFor = publicRoute.waitingPlatforms();
+      const routes = await publicRoute.routes();
+      const waitingFor = await publicRoute.waitingPlatforms(routes);
       const rows = await db.query(
         "SELECT q.*, m.url_path, m.filename FROM publish_queue q LEFT JOIN media m ON m.id = q.media_id " +
         "WHERE q.status = 'approved_publishing'" +
@@ -380,7 +436,7 @@ async function finisherTick() {
           [row.id]
         );
         if (!fresh || !fresh.length) continue;
-        await processClaimedRow(fresh[0]);
+        await processClaimedRow(fresh[0], routes);
       }
     } catch (err) {
       state.lastError = 'finisher: ' + err.message;

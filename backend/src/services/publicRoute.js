@@ -1,39 +1,57 @@
 const tiktokPublish = require('./tiktokPublish');
 const youtubePublish = require('./youtubePublish');
+const brandConfig = require('./brandConfig');
 
-// Can a platform show what this system posts to it? (owner 2026-11-07: "figure
-// out why they are not allowing post publicly")
+// How each platform's approved posts reach the public right now (owner
+// 2026-11-07: "figure out why they are not allowing post publicly", then "not
+// a third party app for money").
 //
 // TikTok and YouTube only make API posts public when the posting app has passed
 // their own review:
 //  - TikTok: an app that has not passed its Direct Post audit may only post to
-//    a PRIVATE TikTok account (error unaudited_client_can_only_post_to_private_accounts),
-//    so every post to the public Sam's account is refused.
+//    a PRIVATE TikTok account (unaudited_client_can_only_post_to_private_accounts),
+//    and TikTok's guidelines keep that audit for apps made for the public - a
+//    tool that posts to your own accounts does not qualify. What TikTok DOES
+//    allow any app: sending the video to the owner's TikTok drafts, where he
+//    posts it himself (publicly) from the TikTok app - route 'drafts', switched
+//    on with the setting tiktok_route = drafts.
 //  - YouTube: every upload from a Google project that has not passed the
-//    YouTube API audit is locked Private for good - it can never be made
-//    public, only uploaded again.
-// Until a platform has such a route, its approved posts WAIT in the schedule
-// (nothing is refused, nothing is burned) and go out once the route exists.
-// The route opens when TIKTOK_APP_AUDITED / YOUTUBE_APP_AUDITED is set true.
+//    YouTube API audit is locked Private for good. The audit is free; until it
+//    passes, YouTube posts wait.
+//
+// Routes:
+//  'direct' - the system publishes the post itself (public)
+//  'drafts' - TikTok only: the video goes to the owner's TikTok drafts
+//  'wait'   - no public route yet: approved posts wait in the schedule
+//             (nothing refused, nothing burned) and go out once one exists.
+// TIKTOK_APP_AUDITED / YOUTUBE_APP_AUDITED = true in .env switch to 'direct'.
 
 const NAMES = { tiktok: 'TikTok', youtube: 'YouTube' };
 
-function waiting(platform) {
-  if (platform === 'tiktok') return !tiktokPublish.appAudited();
-  if (platform === 'youtube') return !youtubePublish.appAudited();
-  return false;
+async function routes() {
+  const cfg = await brandConfig.get();
+  const tiktokDrafts = String(cfg.tiktok_route || '').trim().toLowerCase() === 'drafts';
+  return {
+    instagram: 'direct',
+    facebook_page: 'direct',
+    tiktok: tiktokPublish.appAudited() ? 'direct' : tiktokDrafts ? 'drafts' : 'wait',
+    youtube: youtubePublish.appAudited() ? 'direct' : 'wait'
+  };
 }
 
 // Platforms whose posts currently wait.
-function waitingPlatforms() {
-  return Object.keys(NAMES).filter(waiting);
+async function waitingPlatforms(r) {
+  const rr = r || (await routes());
+  return Object.keys(rr).filter((p) => rr[p] === 'wait');
 }
 
-// Owner-facing reason a post waits, or null when it can go out.
-function reason(platform) {
-  return waiting(platform)
-    ? NAMES[platform] + ' does not allow public posts from this system yet - the post waits until it does'
-    : null;
+// Owner-facing reason a post waits (r = routes()), or null when it can go out.
+function reason(platform, r) {
+  if (!r || r[platform] !== 'wait') return null;
+  if (platform === 'tiktok') {
+    return 'TikTok does not allow public posts from this system yet - the post waits (or send TikTok posts to your TikTok drafts: Settings → Platform Connections)';
+  }
+  return (NAMES[platform] || platform) + ' does not allow public posts from this system yet - the post waits until it does';
 }
 
-module.exports = { waiting, waitingPlatforms, reason, NAMES };
+module.exports = { routes, waitingPlatforms, reason, NAMES };

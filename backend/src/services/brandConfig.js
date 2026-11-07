@@ -23,7 +23,11 @@ const DEFAULTS = {
   // by services/autopilot.js directly, never through this 60 s cache.
   publish_slots: '12:30,19:00', // Tbilisi times; one post per platform per slot
   sound_mode: 'rotate', // rotate = circulate the library's sounds; own = keep each video's sound
-  autoprep_buffer: '5' // prepared videos allowed to wait for review at once
+  autoprep_buffer: '5', // prepared videos allowed to wait for review at once
+  // How approved TikTok posts go out while TikTok has not audited the app
+  // (services/publicRoute.js): 'wait' = they wait; 'drafts' = they land in
+  // the owner's TikTok drafts and he posts them from the TikTok app.
+  tiktok_route: 'wait'
 };
 
 let cache = null;

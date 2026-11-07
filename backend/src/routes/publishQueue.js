@@ -57,16 +57,17 @@ router.get('/publish-queue', async (req, res) => {
   if (status === 'all') {
     // Everything still in play first, then history - a long history must
     // never push a post that waits for the owner off the list.
-    rows = await db.query(base + " ORDER BY (q.status IN ('pending_review','failed','unknown','approved_publishing','publishing')) DESC, q.created_at DESC LIMIT 300");
+    rows = await db.query(base + " ORDER BY (q.status IN ('pending_review','failed','unknown','in_drafts','approved_publishing','publishing')) DESC, q.created_at DESC LIMIT 300");
   } else {
     rows = await db.query(base + ' WHERE q.status = ? ORDER BY q.created_at ASC LIMIT 100', [status]);
   }
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  const routes = await publicRoute.routes();
   for (const q of rows) {
     // Why an approved post is not going out (see services/publicRoute.js)
-    q.waiting_route = q.status === 'approved_publishing' && !q.creation_id ? publicRoute.reason(q.platform) : null;
+    q.waiting_route = q.status === 'approved_publishing' && !q.creation_id ? publicRoute.reason(q.platform, routes) : null;
   }
-  res.json({ queue: rows });
+  res.json({ queue: rows, routes });
 });
 
 // POST /api/publish-queue/:id/approve  - the owner's explicit go for THIS post.
@@ -86,8 +87,13 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
   }
   const when = whenAsked || (row[0].prep_media_id ? 'slot' : 'now');
 
+  const routes = await publicRoute.routes();
   let postOptions = null;
-  if (row[0].platform === 'tiktok') {
+  if (row[0].platform === 'tiktok' && routes.tiktok === 'drafts') {
+    // Drafts route: the owner sets who can watch, comments etc. himself in the
+    // TikTok app when he posts the draft - nothing to choose here.
+    postOptions = JSON.stringify({ route: 'drafts' });
+  } else if (row[0].platform === 'tiktok') {
     const b = req.body || {};
     if (!TIKTOK_PRIVACY.includes(b.privacy_level)) {
       return res.status(400).json({ error: 'Pick a privacy level for this TikTok post (who can watch it)' });
@@ -127,7 +133,7 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
   if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!rows.affectedRows) return res.status(409).json({ error: 'Not in an approvable state' });
   const on = await autopilot.isOn();
-  const waits = publicRoute.reason(row[0].platform);
+  const waits = publicRoute.reason(row[0].platform, routes);
   res.json({
     ok: true,
     status: 'approved_publishing',
@@ -136,6 +142,9 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
     waiting_route: waits,
     note: waits
       ? 'Approved. ' + waits + '.'
+      : row[0].platform === 'tiktok' && routes.tiktok === 'drafts'
+        ? 'Approved. ' + (scheduledAt ? 'At its slot' : 'Right away') + ' the video goes to your TikTok drafts - open the TikTok notification, paste the caption (Copy caption here) and post it.' +
+          (on ? '' : ' The system is OFF, so it waits until you switch it ON.')
       : !on
         ? 'Approved. The system is switched OFF, so it waits - switch it ON on the Dashboard to let it publish.'
         : scheduledAt
@@ -175,6 +184,18 @@ router.put('/publish-queue/:id/caption', async (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/publish-queue/:id/posted - the owner posted this TikTok draft from
+// the TikTok app (the system also notices by itself within ~10 minutes).
+router.post('/publish-queue/:id/posted', async (req, res) => {
+  const rows = await db.query(
+    "UPDATE publish_queue SET status = 'published', error = NULL, published_at = NOW() WHERE id = ? AND status = 'in_drafts'",
+    [req.params.id]
+  );
+  if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (!rows.affectedRows) return res.status(409).json({ error: 'This post is not waiting in your TikTok drafts - reload' });
+  res.json({ ok: true, status: 'published' });
+});
+
 // POST /api/publish-queue/:id/drop
 router.post('/publish-queue/:id/drop', async (req, res) => {
   // A TikTok row whose upload already went out CANNOT be stopped - TikTok
@@ -184,6 +205,17 @@ router.post('/publish-queue/:id/drop', async (req, res) => {
   if (info === null) return res.status(503).json({ error: 'Database unavailable' });
   if (!info.length) return res.status(404).json({ error: 'Not found' });
   const r0 = info[0];
+  if (r0.platform === 'tiktok' && r0.status === 'approved_publishing' && tiktokPublish.isDraftId(r0.creation_id)) {
+    // A draft upload under way publishes nothing by itself - it can only
+    // land in the owner's TikTok inbox, where he simply ignores it.
+    const gone = await db.query(
+      "UPDATE publish_queue SET status = 'dropped' WHERE id = ? AND status = 'approved_publishing'",
+      [req.params.id]
+    );
+    if (gone === null) return res.status(503).json({ error: 'Database unavailable' });
+    if (!gone.affectedRows) return res.status(409).json({ error: 'Row changed state - reload and look again' });
+    return res.json({ ok: true, status: 'dropped', note: 'Dropped. The video may still show up in your TikTok drafts - ignore it; nothing is posted unless you post it.' });
+  }
   if (COMMIT_ON_UPLOAD.includes(r0.platform) && r0.creation_id && r0.status === 'approved_publishing') {
     const parked = await db.query(
       "UPDATE publish_queue SET status = 'unknown', error = 'drop requested AFTER the upload was committed - the platform may still publish this video; CHECK THE ACCOUNT' WHERE id = ? AND status = 'approved_publishing'",
@@ -194,7 +226,9 @@ router.post('/publish-queue/:id/drop', async (req, res) => {
     return res.json({ ok: true, status: 'unknown', note: 'Too late to stop this one: the video was already uploaded and may still publish. Check the account.' });
   }
   const rows = await db.query(
-    "UPDATE publish_queue SET status = 'dropped' WHERE id = ? AND status IN ('pending_review','failed','approved_publishing','unknown')" +
+    // in_drafts: the owner decided not to post the draft (it stays in his
+    // TikTok inbox; nothing of it is public)
+    "UPDATE publish_queue SET status = 'dropped' WHERE id = ? AND status IN ('pending_review','failed','approved_publishing','unknown','in_drafts')" +
       " AND NOT (status = 'approved_publishing' AND creation_id IS NOT NULL AND platform IN ('tiktok','youtube'))",
     [req.params.id]
   );

@@ -212,10 +212,19 @@ async function startPost(filename, caption, options, persistId) {
     return { ok: false, abortedPreUpload: true, error: 'could not record the publish id - aborted before any upload, safe to approve again' };
   }
 
-  // Upload: from the first byte onward this row is committed. Stream the file
-  // (no 60 MB sync read on the memory-capped shared host).
+  // Upload: from the first byte onward this row is committed.
+  const warning = await putVideo(init.data.upload_url, filePath, size);
+  return warning
+    ? { ok: true, creationId: init.data.publish_id, uploadWarning: warning }
+    : { ok: true, creationId: init.data.publish_id };
+}
+
+// PUT the whole file to TikTok's upload_url. Streams it (no 60 MB sync read on
+// the memory-capped shared host). Returns null on success, else a warning -
+// the outcome of a started upload is never "safe to retry".
+async function putVideo(uploadUrl, filePath, size) {
   try {
-    const up = await fetch(init.data.upload_url, {
+    const up = await fetch(uploadUrl, {
       method: 'PUT',
       headers: {
         'Content-Type': 'video/mp4',
@@ -226,13 +235,78 @@ async function startPost(filename, caption, options, persistId) {
       duplex: 'half',
       signal: AbortSignal.timeout(5 * 60 * 1000)
     });
-    if (!up.ok && up.status !== 201) {
-      return { ok: true, creationId: init.data.publish_id, uploadWarning: 'upload returned HTTP ' + up.status };
-    }
+    if (!up.ok && up.status !== 201) return 'upload returned HTTP ' + up.status;
   } catch (err) {
-    return { ok: true, creationId: init.data.publish_id, uploadWarning: 'upload outcome unclear: ' + err.message };
+    return 'upload outcome unclear: ' + err.message;
   }
-  return { ok: true, creationId: init.data.publish_id };
+  return null;
+}
+
+// ---------- drafts (Content Posting API "Upload") ----------
+// The free public route while the app has not passed TikTok's Direct Post
+// audit (owner 2026-11-07: no paid third parties). The finished video lands
+// in the owner's TikTok inbox as a draft; he opens the TikTok notification,
+// pastes the caption and posts it - publicly - from the TikTok app. This
+// endpoint has no private-account rule for unaudited apps; TikTok allows at
+// most 5 drafts waiting to be posted in any 24 h
+// (spam_risk_too_many_pending_share). There is no caption field: the owner
+// adds it in the app. Same commitment rule as startPost: the publish_id is
+// persisted before any byte uploads.
+async function startDraft(filename, persistId) {
+  const acc = await account();
+  if (!acc) return { ok: false, error: 'TikTok not connected' };
+
+  const filePath = path.join(MEDIA_DIR, path.basename(filename || ''));
+  let size;
+  try {
+    size = fs.statSync(filePath).size;
+  } catch {
+    return { ok: false, error: 'video file missing on the server' };
+  }
+  if (!size || size > 60 * 1024 * 1024) {
+    return { ok: false, error: 'video must be between 1 byte and 60 MB for TikTok upload' };
+  }
+
+  let init;
+  try {
+    init = await apiPost(acc.access_token, '/post/publish/inbox/video/init/', {
+      source_info: {
+        source: 'FILE_UPLOAD',
+        video_size: size,
+        chunk_size: size,
+        total_chunk_count: 1
+      }
+    });
+  } catch (err) {
+    return { ok: false, error: 'draft init failed: ' + err.message };
+  }
+  if (!init.data || !init.data.publish_id || (init.error && init.error.code !== 'ok')) {
+    const code = init.error && init.error.code;
+    const msg = (init.error && init.error.message) || 'draft init returned an unrecognized response';
+    if (code === 'spam_risk_too_many_pending_share') {
+      return {
+        ok: false,
+        draftsFull: true,
+        error: 'Your TikTok drafts are full - TikTok keeps at most 5 waiting to be posted. Post (or delete) the drafts in your TikTok inbox; this one moved to the next slot.'
+      };
+    }
+    return { ok: false, error: 'TikTok refused the draft: ' + msg + (code && code !== 'ok' ? ' (' + code + ')' : '') };
+  }
+
+  const persisted = persistId ? await persistId(init.data.publish_id) : true;
+  if (!persisted) {
+    return { ok: false, abortedPreUpload: true, error: 'could not record the draft id - aborted before any upload, safe to approve again' };
+  }
+  const warning = await putVideo(init.data.upload_url, filePath, size);
+  return warning
+    ? { ok: true, creationId: init.data.publish_id, uploadWarning: warning }
+    : { ok: true, creationId: init.data.publish_id };
+}
+
+// Publish ids of draft uploads look like "v_inbox_file~v2.123"; direct posts
+// like "v_pub_file~v2.123".
+function isDraftId(publishId) {
+  return /^v_inbox/.test(String(publishId || ''));
 }
 
 // Phase 2: poll the publish status. definitive:true marks the ONLY failure
@@ -275,4 +349,4 @@ function appAudited() {
   return String(process.env.TIKTOK_APP_AUDITED || '').toLowerCase() === 'true';
 }
 
-module.exports = { account, creatorInfo, startPost, tryFinish, appAudited, ALLOWED_PRIVACY };
+module.exports = { account, creatorInfo, startPost, startDraft, isDraftId, tryFinish, appAudited, ALLOWED_PRIVACY };

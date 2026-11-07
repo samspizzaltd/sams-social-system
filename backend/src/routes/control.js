@@ -116,8 +116,10 @@ const SETTING_KEYS = [
   'auto_cycle_enabled', 'auto_cycle_times', 'auto_cycle_days',
   'platform_tiktok_enabled', 'platform_instagram_enabled',
   'platform_facebook_enabled', 'platform_youtube_enabled',
-  'publish_slots', 'sound_mode', 'autoprep_buffer'
+  'publish_slots', 'sound_mode', 'autoprep_buffer', 'tiktok_route'
 ];
+// Settings with a fixed set of values.
+const SETTING_CHOICES = { tiktok_route: ['wait', 'drafts'] };
 const brandConfig = require('../services/brandConfig');
 
 router.get('/settings', async (req, res) => {
@@ -135,6 +137,9 @@ router.put('/settings', async (req, res) => {
   }
   if (!SETTING_KEYS.includes(b.key)) {
     return res.status(400).json({ error: 'Unknown setting key', knownKeys: SETTING_KEYS });
+  }
+  if (SETTING_CHOICES[b.key] && !SETTING_CHOICES[b.key].includes(String(b.value))) {
+    return res.status(400).json({ error: b.key + ' must be one of: ' + SETTING_CHOICES[b.key].join(', ') });
   }
   const rows = await db.query(
     'INSERT INTO branding (cfg_key, cfg_value) VALUES (?,?) ON DUPLICATE KEY UPDATE cfg_value = VALUES(cfg_value)',

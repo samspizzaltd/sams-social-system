@@ -156,7 +156,8 @@ export function AutopilotCard({ goTo }) {
   // (TikTok / YouTube before their app reviews) - their posts wait.
   const waitingNames = (ap.waiting_platforms || []).map((p) => PLATFORM_NAME[p] || p);
   const waitingPosts = Object.entries(c.waiting_route || {}).filter(([, n]) => n > 0);
-  const publicNames = (ap.connected || []).filter((p) => !(ap.waiting_platforms || []).includes(p)).map((p) => PLATFORM_NAME[p] || p);
+  const publicNames = (ap.connected || []).filter((p) => !(ap.waiting_platforms || []).includes(p))
+    .map((p) => (PLATFORM_NAME[p] || p) + (ap.routes && ap.routes[p] === 'drafts' ? ' (via your drafts)' : ''));
 
   return (
     <div className={'cp-card cp-ap-card ' + (on ? 'on' : 'off')}>
@@ -218,6 +219,14 @@ export function AutopilotCard({ goTo }) {
           {waitingPosts.length > 0 && (
             <> Approved posts waiting here: {waitingPosts.map(([p, n]) => n + ' ' + (PLATFORM_NAME[p] || p)).join(', ')} - nothing is lost; they go out as soon as {waitingNames.length > 1 ? 'those platforms allow it' : 'it allows it'}.</>
           )}
+        </p>
+      )}
+      {c.in_drafts > 0 && (
+        <p className="cp-muted" style={{ marginTop: 8 }}>
+          <button type="button" className="cp-btn small" onClick={() => goTo('media', 'publish')}>
+            {c.in_drafts} in your TikTok drafts
+          </button>{' '}
+          Open TikTok, paste the caption (Publish Queue → Needs you → Copy caption) and post {c.in_drafts === 1 ? 'it' : 'them'}.
         </p>
       )}
       {ap.activity && (

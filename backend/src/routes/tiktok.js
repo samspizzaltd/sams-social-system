@@ -132,6 +132,71 @@ apiRouter.get('/tiktok/creator-info', async (req, res) => {
   res.json({ creator });
 });
 
+// ---------- test draft (owner 2026-11-07) ----------
+// One video straight into the owner's TikTok drafts, outside the queue, to
+// prove TikTok accepts drafts from this app before the drafts route is
+// switched on. Nothing is posted: the draft waits in his TikTok inbox, where
+// he can post or delete it.
+const TEST_DRAFT_KEY = 'tiktok_test_draft';
+let testDraftRunning = false;
+
+function saveTestDraft(obj) {
+  return db.query(
+    'INSERT INTO branding (cfg_key, cfg_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE cfg_value = VALUES(cfg_value)',
+    [TEST_DRAFT_KEY, JSON.stringify(obj)]
+  );
+}
+
+// POST /api/tiktok/test-draft {media_id?} - default: the newest autopilot edit
+apiRouter.post('/tiktok/test-draft', async (req, res) => {
+  if (testDraftRunning) return res.status(409).json({ error: 'A test draft is being sent right now - wait a minute' });
+  const asked = Number(req.body && req.body.media_id);
+  const rows = Number.isInteger(asked) && asked > 0
+    ? await db.query("SELECT id, title, filename FROM media WHERE id = ? AND kind IN ('rendered','video') AND url_path IS NOT NULL", [asked])
+    : await db.query(
+      "SELECT m.id, m.title, m.filename FROM media_prep p JOIN media m ON m.id = p.output_media_id" +
+      " WHERE p.status = 'staged' AND m.url_path IS NOT NULL ORDER BY p.updated_at DESC LIMIT 1"
+    );
+  if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  if (!rows.length) return res.status(404).json({ error: 'No server-hosted video to send' });
+  const m = rows[0];
+  testDraftRunning = true;
+  try {
+    const started = { media_id: m.id, title: m.title, at: new Date().toISOString(), publish_id: null };
+    if (!(await saveTestDraft(started))) return res.status(503).json({ error: 'Database unavailable' });
+    const r = await tiktokPublish.startDraft(m.filename,
+      async (publishId) => !!(await saveTestDraft({ ...started, publish_id: publishId })));
+    if (!r.ok) {
+      await saveTestDraft({ ...started, error: r.error });
+      return res.status(r.draftsFull ? 429 : 502).json({ error: r.error });
+    }
+    res.json({
+      ok: true,
+      publish_id: r.creationId,
+      media_id: m.id,
+      title: m.title,
+      warning: r.uploadWarning || null,
+      note: 'Sent. TikTok usually shows it in your TikTok inbox within a few minutes (Inbox → system notifications) - open it to see the draft. Nothing is posted unless you post it.'
+    });
+  } finally {
+    testDraftRunning = false;
+  }
+});
+
+// GET /api/tiktok/test-draft - what TikTok says about the last test draft
+apiRouter.get('/tiktok/test-draft', async (req, res) => {
+  const rows = await db.query('SELECT cfg_value FROM branding WHERE cfg_key = ?', [TEST_DRAFT_KEY]);
+  if (rows === null) return res.status(503).json({ error: 'Database unavailable' });
+  let t = null;
+  try { t = rows.length ? JSON.parse(rows[0].cfg_value) : null; } catch { t = null; }
+  if (!t || !t.publish_id) return res.json({ test: t, state: t && t.error ? 'refused' : t ? 'starting' : null });
+  const st = await tiktokPublish.tryFinish(t.publish_id);
+  const state = !st.ok
+    ? (st.definitive ? 'failed' : 'unreadable')
+    : st.done ? (st.inbox ? 'in_drafts' : 'posted') : 'processing';
+  res.json({ test: t, state, detail: st.ok ? null : st.error });
+});
+
 // Deliberate unbind, so a reconnect with a different account is an explicit
 // two-step owner action rather than something an OAuth dance can cause.
 apiRouter.post('/tiktok/disconnect', async (req, res) => {

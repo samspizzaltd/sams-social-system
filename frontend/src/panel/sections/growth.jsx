@@ -142,6 +142,97 @@ function ConnectionsView() {
         </tbody>
       </table>
       <button className="cp-btn small ghost" style={{ marginTop: 10 }} onClick={load}>Refresh</button>
+      <TikTokRouteCard connected={!!(tiktok && tiktok.connected)} />
+    </div>
+  );
+}
+
+// How approved TikTok posts reach TikTok while TikTok has not audited the app
+// (backend services/publicRoute.js). Owner 2026-11-07: no paid third parties.
+function TikTokRouteCard({ connected }) {
+  const [route, setRoute] = useState(null);
+  const [test, setTest] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+
+  const loadTest = useCallback(() => {
+    api.get('/api/tiktok/test-draft').then((r) => setTest(r.data)).catch(() => {});
+  }, []);
+  useEffect(() => {
+    api.get('/api/settings')
+      .then((r) => setRoute((r.data.settings && r.data.settings.tiktok_route) || 'wait'))
+      .catch((e) => setError(e.response?.data?.error || e.message));
+    loadTest();
+  }, [loadTest]);
+
+  const saveRoute = async (value) => {
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      await api.put('/api/settings', { key: 'tiktok_route', value });
+      setRoute(value);
+      setNotice(value === 'drafts'
+        ? 'On: at each posting slot the approved TikTok post goes to your TikTok drafts - you post it from the TikTok app.'
+        : 'TikTok posts now wait until TikTok approves public posting.');
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendTest = async () => {
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const r = await api.post('/api/tiktok/test-draft', {});
+      setNotice(r.data.note + (r.data.warning ? ' (' + r.data.warning + ')' : ''));
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    } finally {
+      setBusy(false);
+      loadTest();
+    }
+  };
+
+  const STATE_TEXT = {
+    starting: 'being sent…',
+    processing: 'TikTok is still processing it',
+    in_drafts: 'delivered to your TikTok drafts ✓',
+    posted: 'delivered - and posted from your drafts ✓',
+    failed: 'TikTok could not process it',
+    refused: 'TikTok refused it',
+    unreadable: 'TikTok status unreadable right now'
+  };
+
+  return (
+    <div className="cp-card" style={{ marginTop: 14 }}>
+      <h3>TikTok posts</h3>
+      <ErrorBox error={error} />
+      {notice && <div className="cp-success">{notice}</div>}
+      <p className="cp-muted">
+        TikTok only lets an app post publicly by itself after TikTok audits it, and keeps that audit for apps made for the public.
+        What TikTok allows any app: sending the finished video to your TikTok drafts. You then post it from the TikTok app
+        (paste the caption, pick who can watch - about 30 seconds), and it is public like any post you make yourself.
+      </p>
+      {route === null ? <Loading /> : (
+        <label className="cp-setting">Approved TikTok posts
+          <select value={route} disabled={busy} onChange={(e) => saveRoute(e.target.value)}>
+            <option value="wait">Wait until TikTok approves public posting</option>
+            <option value="drafts">Send them to my TikTok drafts at their posting slot</option>
+          </select>
+        </label>
+      )}
+      <div className="cp-content-actions" style={{ marginTop: 10 }}>
+        <ConfirmButton className="cp-btn small ghost" disabled={busy || !connected}
+          label="Send a test draft" confirmLabel="Send the newest edit to my TikTok drafts?" onConfirm={sendTest} />
+        <button className="cp-btn small ghost" disabled={busy} onClick={loadTest}>Check the test draft</button>
+      </div>
+      {test && test.test && (
+        <p className="cp-muted" style={{ marginTop: 6 }}>
+          Test draft: {test.test.title || 'video #' + test.test.media_id} - {STATE_TEXT[test.state] || test.state || '—'}
+          {test.test.error ? ' - ' + test.test.error : ''}{test.detail ? ' - ' + test.detail : ''} ({fmtDate(test.test.at)})
+        </p>
+      )}
     </div>
   );
 }
