@@ -559,11 +559,21 @@ export function PublishQueue() {
       {q.platform === 'tiktok' && tiktokDrafts && ['pending_review', 'failed', 'approved_publishing'].includes(q.status) && (
         <p className="cp-muted" style={{ margin: '4px 0' }}>Arrives in your TikTok inbox at its slot (Inbox → System notifications) - you post it from the TikTok app.</p>
       )}
-      {q.status === 'in_drafts' && (
-        <p className="cp-muted" style={{ margin: '4px 0' }}>
-          In your TikTok inbox: TikTok → Inbox → System notifications → tap the video, paste the caption (Copy caption), pick who can watch, post. It is not in your profile's Drafts folder. The system notices the post within about 10 minutes.
-        </p>
-      )}
+      {q.status === 'in_drafts' && (() => {
+        // TikTok's inbox upload carries the video only (its API takes no
+        // caption or settings for inbox videos) - so the panel hands the owner
+        // the caption with every hashtag, and the settings to tick in the app.
+        const o = parseJson(q.post_options) || {};
+        const onOff = (off) => (off ? 'off' : 'on');
+        return (
+          <div className="cp-magic-note" style={{ marginTop: 6 }}>
+            <div><strong>In your TikTok inbox</strong> (TikTok → Inbox → System notifications → tap the video - it is not in your profile's Drafts folder).</div>
+            <div style={{ marginTop: 4 }}>1. <strong>Copy caption</strong> below (all the hashtags are in it) and paste it as the TikTok description.</div>
+            <div>2. Set: Who can watch → <strong>Everyone</strong> · Comments → <strong>{onOff(o.disable_comment)}</strong> · Duet → <strong>{onOff(o.disable_duet)}</strong> · Stitch → <strong>{onOff(o.disable_stitch)}</strong>.</div>
+            <div>3. Post. The panel marks it published within about 10 minutes.</div>
+          </div>
+        );
+      })()}
       {q.platform === 'youtube' && parseJson(q.post_options) && parseJson(q.post_options).title && (
         <p className="cp-muted" style={{ margin: '4px 0' }}>Title: {parseJson(q.post_options).title}</p>
       )}
@@ -621,7 +631,7 @@ export function PublishQueue() {
         )}
         {q.status === 'in_drafts' && (
           <>
-            <button className="cp-btn small" disabled={busy === q.id} onClick={() => copyCaption(q)}>Copy caption</button>
+            <button className="cp-btn" disabled={busy === q.id} onClick={() => copyCaption(q)}>Copy caption</button>
             <ConfirmButton className="cp-btn small ghost" disabled={busy === q.id}
               label="I posted it" confirmLabel="Posted on TikTok?" onConfirm={() => act(q.id, 'posted')} />
           </>
