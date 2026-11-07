@@ -110,6 +110,11 @@ async function pageStartReel(videoUrl, filename) {
     if (localPath) {
       try { size = fs.statSync(localPath).size; } catch { size = 0; }
     }
+    // rupload wants the size up front: "either both Content-Length and
+    // X-Entity-Length, or Transfer-Encoding alone" (2026-11-07: a streamed
+    // body without Content-Length went out chunked next to file_size and was
+    // refused). An explicit Content-Length makes fetch stream the file with
+    // that length instead of chunking it.
     const up = size > 0
       ? await fetch('https://rupload.facebook.com/video-upload/v26.0/' + sj.video_id, {
         method: 'POST',
@@ -117,6 +122,8 @@ async function pageStartReel(videoUrl, filename) {
           Authorization: 'OAuth ' + page.access_token,
           offset: '0',
           file_size: String(size),
+          'Content-Length': String(size),
+          'X-Entity-Length': String(size),
           'Content-Type': 'application/octet-stream'
         },
         body: Readable.toWeb(fs.createReadStream(localPath)),
