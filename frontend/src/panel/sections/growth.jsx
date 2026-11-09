@@ -237,7 +237,7 @@ function TikTokRouteCard({ connected }) {
       )}
       {route === 'drafts' && (
         <p className="cp-muted">
-          TikTok takes at most 5 videos in 24 hours that you have not posted yet. Post each one when it arrives - when the inbox is full,
+          TikTok takes at most 5 videos in 24 hours that you have not posted yet. Post each one from the TikTok app on your phone when it arrives (they do not show on tiktok.com) - when the inbox is full,
           the next post waits and tries again every 30 minutes. The test button is off while posts go to your inbox: every test takes one of those 5 places.
         </p>
       )}

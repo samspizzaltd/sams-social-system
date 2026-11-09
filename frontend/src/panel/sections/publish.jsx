@@ -557,7 +557,7 @@ export function PublishQueue() {
         <span className={`cp-pill ${STATUS_PILL[q.status] || 'warn'}`}>{statusLabel(q)}</span>
       </div>
       {q.platform === 'tiktok' && tiktokDrafts && ['pending_review', 'failed', 'approved_publishing'].includes(q.status) && (
-        <p className="cp-muted" style={{ margin: '4px 0' }}>Arrives in your TikTok inbox at its slot (Inbox → System notifications) - you post it from the TikTok app.</p>
+        <p className="cp-muted" style={{ margin: '4px 0' }}>Arrives in your TikTok inbox at its slot (Inbox → System notifications) - you post it from the TikTok app on your phone; it does not show on tiktok.com.</p>
       )}
       {q.status === 'in_drafts' && (() => {
         // TikTok's inbox upload carries the video only (its API takes no
@@ -567,7 +567,7 @@ export function PublishQueue() {
         const onOff = (off) => (off ? 'off' : 'on');
         return (
           <div className="cp-magic-note" style={{ marginTop: 6 }}>
-            <div><strong>In your TikTok inbox</strong> (TikTok → Inbox → System notifications → tap the video - it is not in your profile's Drafts folder).</div>
+            <div><strong>In your TikTok inbox</strong> (TikTok app on your phone → Inbox → System notifications → tap the video. It does not show on tiktok.com, and it is not in your profile's Drafts folder).</div>
             <div style={{ marginTop: 4 }}>1. <strong>Copy caption</strong> below (all the hashtags are in it) and paste it as the TikTok description.</div>
             <div>2. Set: Who can watch → <strong>Everyone</strong> · Comments → <strong>{onOff(o.disable_comment)}</strong> · Duet → <strong>{onOff(o.disable_duet)}</strong> · Stitch → <strong>{onOff(o.disable_stitch)}</strong>.</div>
             <div>3. Post. The panel marks it published within about 10 minutes.</div>

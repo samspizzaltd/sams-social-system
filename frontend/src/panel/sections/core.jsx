@@ -226,7 +226,7 @@ export function AutopilotCard({ goTo }) {
           <button type="button" className="cp-btn small" onClick={() => goTo('media', 'publish')}>
             {c.in_drafts} waiting in your TikTok inbox
           </button>{' '}
-          Open TikTok → Inbox → System notifications, tap the video, paste the caption (Publish Queue → Needs you → Copy caption) and post {c.in_drafts === 1 ? 'it' : 'them'}.
+          Open the TikTok app on your phone (these videos do not show on tiktok.com) → Inbox → System notifications, tap the video, paste the caption (Publish Queue → Needs you → Copy caption) and post {c.in_drafts === 1 ? 'it' : 'them'}.
         </p>
       )}
       {ap.activity && (
