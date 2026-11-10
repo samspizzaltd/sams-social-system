@@ -273,7 +273,11 @@ async function collectFacebook(rows) {
     if (insightNames === null && got) {
       const w = await workingMetrics(id, 'video_insights', Object.keys(FB_INSIGHTS), page.access_token);
       insightNames = w.names;
-      if (!w.names.length) res.notes.push('views and reach need one more Meta permission (read_insights). Meta said: ' + w.error);
+      if (!w.names.length) {
+        // The video's own "views" field works without it (seen live 2026-11-10).
+        res.notes.push((fieldSet === FB_FIELD_SETS[0] ? 'reach and average watch time need' : 'views, reach and average watch time need') +
+          ' one more Meta permission (read_insights). Meta said: ' + w.error);
+      }
       if (w.first) readInsights(w.first.data, FB_INSIGHTS, out);
       else if (w.names.length) {
         const r = await graph(id + '/video_insights?metric=' + w.names.join(','), page.access_token);
