@@ -1,11 +1,14 @@
 const { ResearchEngine, ContentVault, CompetitorTracker, TrendAnalyzer } = require('./Phase2Intelligence');
 const { ContentCreationEngine, ApprovalWorkflow, ContentScheduler } = require('./Phase3Production');
-const { MultiPlatformPublisher } = require('./Phase4Distribution');
-const { DataSyncAgent, PerformanceDashboard, EngagementAnalyzer } = require('./Phase5Analytics');
-const { PatternDetector, ABTestFramework, StrategyOptimizer } = require('./Phase6Optimization');
-const { EligibilityChecker, RevenueTracker, OpportunityAlert } = require('./Phase7Monetization');
 const cycleRepository = require('../database/cycleRepository');
 const brandConfig = require('../services/brandConfig');
+const metrics = require('../services/metrics');
+
+// A cycle researches and writes drafts. It never posts (real posting is the
+// Publish Queue, with the owner's approval) and it never invents numbers: until
+// 2026-11-10 phases 4-7 ran on stub publishers, Math.random() analytics,
+// hard-coded optimizer output and a made-up 15,000 followers. Phases 5-6 now
+// read the REAL platform numbers collected by services/metrics.js.
 
 class SystemOrchestrator {
   constructor(claudeApiKey, ownerEmail) {
@@ -23,30 +26,6 @@ class SystemOrchestrator {
     this.contentCreator = new ContentCreationEngine(claudeApiKey);
     this.approvalWorkflow = new ApprovalWorkflow();
     this.contentScheduler = new ContentScheduler();
-
-    // Phase 4 - Distribution
-    this.publisher = new MultiPlatformPublisher({
-      tiktok: process.env.TIKTOK_TOKEN || 'sandbox',
-      instagram: process.env.INSTAGRAM_TOKEN || 'sandbox',
-      facebook: process.env.FACEBOOK_TOKEN || 'sandbox',
-      facebookPageId: process.env.FACEBOOK_PAGE_ID || 'sandbox',
-      youtube: process.env.YOUTUBE_TOKEN || 'sandbox'
-    });
-
-    // Phase 5 - Analytics
-    this.dataSync = new DataSyncAgent();
-    this.dashboard = new PerformanceDashboard();
-    this.engagementAnalyzer = new EngagementAnalyzer();
-
-    // Phase 6 - Optimization
-    this.patternDetector = new PatternDetector(claudeApiKey);
-    this.abTestFramework = new ABTestFramework();
-    this.strategyOptimizer = new StrategyOptimizer(claudeApiKey);
-
-    // Phase 7 - Monetization
-    this.eligibilityChecker = new EligibilityChecker(claudeApiKey);
-    this.revenueTracker = new RevenueTracker();
-    this.opportunityAlert = new OpportunityAlert(claudeApiKey);
 
     this.status = 'ready';
   }
@@ -72,7 +51,6 @@ class SystemOrchestrator {
       // ---- Phase 2: Intelligence ----
       const trends = await this.trendAnalyzer.identifyTrends();
       const research = await this.researchEngine.researchTrends();
-      const competitors = await this.competitorTracker.analyzeCompetitors();
       const gaps = await this.competitorTracker.identifyGaps();
       const ideas = await this.contentVault.generateContentIdeas();
       cycle.phases.intelligence = {
@@ -81,7 +59,6 @@ class SystemOrchestrator {
         topTrend: trends[0] && trends[0].name,
         hashtags: research.hashtags,
         bestTimes: research.bestTimes,
-        competitorsTracked: competitors.length,
         contentGaps: gaps.gaps,
         ideasGenerated: ideas.length
       };
@@ -113,106 +90,35 @@ class SystemOrchestrator {
         }))
       };
 
-      // ---- Phase 4: Distribution ----
-      const publishResults = [];
-      for (const p of produced.filter(x => x.review.status === 'approved')) {
-        const result = await this.publisher.publishToAll({
-          tiktok: { videoUrl: 'pending-media', caption: p.draft.caption, hashtags: research.hashtags },
-          instagram: { type: 'reels', videoUrl: 'pending-media', caption: p.draft.caption, hashtags: research.hashtags },
-          facebook: { content: p.draft.caption, mediaUrl: null }
-        });
-        publishResults.push(result);
-      }
-      cycle.phases.distribution = {
+      // ---- Phase 5: Analytics (real numbers, as of the last refresh) ----
+      const real = await metrics.summary();
+      cycle.phases.analytics = real ? {
         status: 'completed',
-        postsPublished: publishResults.length,
-        platforms: ['tiktok', 'instagram', 'facebook'],
-        publishIds: publishResults.map(r => ({
-          tiktok: r.tiktok && r.tiktok.id,
-          instagram: r.instagram && r.instagram.id,
-          facebook: r.facebook && r.facebook.id
-        }))
-      };
-
-      // ---- Phase 5: Analytics ----
-      const aggregated = await this.publisher.getAggregatedAnalytics();
-      const byPublisher = [
-        [aggregated.tiktok, this.publisher.tiktok],
-        [aggregated.instagram, this.publisher.instagram],
-        [aggregated.facebook, this.publisher.facebook],
-        [aggregated.youtube, this.publisher.youtube]
-      ];
-
-      // Pull live stats for every published post before computing metrics.
-      const allPosts = [];
-      for (const [posts, publisher] of byPublisher) {
-        for (const post of posts) {
-          const live = await publisher.getAnalytics(post.id);
-          post.stats = Object.assign({}, post.stats, live);
-          delete post.stats.postId;
-          delete post.stats.videoId;
-          allPosts.push(post);
+        source: 'Instagram + Facebook (numbers as of the last refresh)',
+        asOf: real.lastRun ? real.lastRun.at : null,
+        postsTracked: real.totals.tracked,
+        views: real.totals.views,
+        reach: real.totals.reach,
+        interactions: real.totals.interactions,
+        followers: {
+          instagram: real.platforms.instagram.followers,
+          facebook: real.platforms.facebook_page.followers
         }
-      }
+      } : { status: 'skipped', note: 'database unavailable - no real numbers to read' };
 
-      await this.dataSync.syncPlatformData(this.publisher.tiktok);
-      const metrics = await this.dashboard.calculateMetrics(allPosts);
-      cycle.phases.analytics = {
+      // ---- Phase 6: What worked (from real posts only) ----
+      const withViews = real ? real.posts.filter(p => p.views !== null) : [];
+      cycle.phases.optimization = withViews.length ? {
         status: 'completed',
-        postsTracked: allPosts.length,
-        totalEngagement: metrics.totalEngagement,
-        averageEngagementRate: Number(metrics.averageEngagementRate.toFixed(2)),
-        platformBreakdown: metrics.platformBreakdown
-      };
-
-      // ---- Phase 6: Optimization ----
-      const patterns = await this.patternDetector.detectContentPatterns(metrics);
-      const trendingTopics = await this.patternDetector.identifyTrendingTopics();
-      const strategy = await this.strategyOptimizer.optimizeStrategy();
-      const testId = this.abTestFramework.createTest(
-        'cycle-' + cycle.number + '-caption-style',
-        { style: 'question-hook' },
-        { style: 'statement-hook' }
-      );
-      const testResult = this.abTestFramework.completeTest(testId);
-      cycle.phases.optimization = {
-        status: 'completed',
-        topContentFormat: patterns.topContent,
-        optimalPostingTimes: patterns.bestTimes,
-        trendingTopics: trendingTopics.trending,
-        recommendations: strategy.recommendations,
-        abTest: { name: testResult.name, winner: testResult.winner },
-        // Phase 6 can only truly learn once there is stored history to compare against.
-        learnedFrom: priorHistory
-          ? {
-              priorCycles: priorHistory.cyclesCompleted,
-              avgEngagementPerCycle: priorHistory.avgEngagementPerCycle,
-              trendVsAverage:
-                priorHistory.avgEngagementPerCycle > 0
-                  ? (metrics.totalEngagement >= priorHistory.avgEngagementPerCycle ? 'above' : 'below')
-                  : 'no baseline'
-            }
-          : { priorCycles: 0, note: 'no stored history - persistence unavailable' }
-      };
-
-      // ---- Phase 7: Monetization ----
-      const accountStats = {
-        followers: 15000,
-        monthlyViews: 250000,
-        monthlyImpressions: 180000
-      };
-      const tiktokFund = await this.eligibilityChecker.checkTikTokCreatorFund(accountStats);
-      const igBonus = await this.eligibilityChecker.checkInstagramReelsBonus(accountStats);
-      const opportunities = await this.opportunityAlert.identifyOpportunities();
-      cycle.phases.monetization = {
-        status: 'completed',
-        eligibility: {
-          tiktokCreatorFund: tiktokFund.eligible,
-          instagramReelsBonus: igBonus.eligible
-        },
-        estimatedMonthly: igBonus.estimatedMonthly,
-        opportunities: opportunities.opportunities
-      };
+        source: 'your real posts',
+        topPosts: withViews.slice().sort((a, b) => b.views - a.views).slice(0, 3).map(p => ({
+          platform: p.platform,
+          views: p.views,
+          interactions: p.interactions,
+          caption: Array.from(p.caption || '').slice(0, 80).join('')
+        })),
+        slots: real.slots
+      } : { status: 'skipped', note: 'no real post numbers yet' };
 
       cycle.status = 'completed';
     } catch (error) {
@@ -248,10 +154,10 @@ class SystemOrchestrator {
       agents: {
         'phase2-intelligence': ['ResearchEngine', 'ContentVault', 'CompetitorTracker', 'TrendAnalyzer'],
         'phase3-production': ['ContentCreationEngine', 'ApprovalWorkflow', 'ContentScheduler'],
-        'phase4-distribution': ['TikTok', 'Instagram', 'Facebook', 'YouTube'],
-        'phase5-analytics': ['DataSyncAgent', 'PerformanceDashboard', 'EngagementAnalyzer'],
-        'phase6-optimization': ['PatternDetector', 'ABTestFramework', 'StrategyOptimizer'],
-        'phase7-monetization': ['EligibilityChecker', 'RevenueTracker', 'OpportunityAlert']
+        'phase4-distribution': ['Publish Queue (your approval)', 'Posting slots', 'Instagram', 'Facebook', 'TikTok inbox', 'YouTube (held for the audit)'],
+        'phase5-analytics': ['Metrics collector - real Instagram + Facebook numbers every 3 hours'],
+        'phase6-optimization': ['What worked - top posts and posting slots from real numbers'],
+        'phase7-monetization': ['Revenue ledger - income you record']
       },
       cyclesRun: this.cycles.length,
       lastCycle: this.cycles[this.cycles.length - 1] || null,

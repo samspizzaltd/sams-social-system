@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../api';
 import { Stat, ErrorBox, Loading, ConfirmButton } from './core';
 
@@ -277,65 +277,245 @@ function useLatestCycle() {
   return { cycle, error, empty };
 }
 
-// ---------- Analytics ----------
+// ---------- Analytics (real platform numbers) ----------
+
+const PLATFORM_LABEL = { instagram: 'Instagram', facebook_page: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube' };
+const dash = (v) => (v === null || v === undefined ? '—' : fmt(v));
+const watchSec = (ms) => (ms === null || ms === undefined ? '—' : (ms / 1000).toFixed(1) + ' s');
+
+// GET /api/metrics - the numbers services/metrics.js collected from the
+// platforms. 'not-deployed' = the server does not have the endpoint yet.
+export function useMetrics() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const load = useCallback(() => api.get('/api/metrics')
+    .then((r) => { setData(r.data); setError(null); return r.data; })
+    .catch((e) => {
+      setError(e.response?.status === 404 ? 'not-deployed' : (e.response?.data?.error || e.message));
+      return null;
+    }), []);
+  useEffect(() => { load(); }, [load]);
+  return { data, error, load };
+}
+
+function followerHint(p) {
+  if (!p || p.followers === null || p.followers === undefined) return 'not read yet';
+  const h = (p.followerHistory || []).filter((x) => x.followers !== null);
+  if (h.length >= 2) {
+    const diff = h[h.length - 1].followers - h[0].followers;
+    return (diff >= 0 ? '+' : '') + fmt(diff) + ' since ' + h[0].day;
+  }
+  return 'as of ' + p.followersDay;
+}
+
+// Plain-language lines from the last refresh (what a platform refused etc.).
+function runNotes(lastRun) {
+  const out = [];
+  if (!lastRun) return out;
+  if (lastRun.error) out.push('Last refresh failed: ' + lastRun.error);
+  for (const [k, r] of Object.entries(lastRun.platforms || {})) {
+    for (const n of r.notes || []) out.push(PLATFORM_LABEL[k] + ': ' + n);
+    if (r.failed) out.push(PLATFORM_LABEL[k] + ': ' + r.failed + ' post(s) could not be read (deleted on the platform?) - their last known numbers are kept.');
+  }
+  return out;
+}
 
 export function AnalyticsSection() {
-  const { cycle, error, empty } = useLatestCycle();
-  const [history, setHistory] = useState(null);
+  const { data, error, load } = useMetrics();
+  const [refreshing, setRefreshing] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const pollRef = useRef(null);
 
-  useEffect(() => {
-    api.get('/api/history?limit=25').then((r) => setHistory(r.data)).catch(() => {});
-  }, []);
+  useEffect(() => () => clearTimeout(pollRef.current), []);
 
+  const refresh = async () => {
+    setNotice(null);
+    try {
+      await api.post('/api/metrics/refresh');
+      setRefreshing(true);
+      const tick = async () => {
+        const d = await load();
+        if (d && d.running) { pollRef.current = setTimeout(tick, 4000); return; }
+        setRefreshing(false);
+        setNotice('Updated from Instagram and Facebook.');
+      };
+      pollRef.current = setTimeout(tick, 3000);
+    } catch (e) {
+      setNotice(e.response?.data?.error || e.message);
+    }
+  };
+
+  if (error === 'not-deployed') return <p className="cp-muted">Real numbers arrive with the next server update.</p>;
   if (error) return <ErrorBox error={error} />;
-  if (empty) return <p className="cp-muted">Run a cycle first - analytics appear once posts are tracked.</p>;
-  if (!cycle) return <Loading />;
+  if (!data) return <Loading />;
 
-  const analytics = cycle.phases && cycle.phases.analytics;
-  const breakdown = analytics && analytics.platformBreakdown ? analytics.platformBreakdown : {};
+  const ig = data.platforms.instagram;
+  const fb = data.platforms.facebook_page;
+  const notes = runNotes(data.lastRun);
+  const busy = refreshing || data.running;
+  const chart = data.posts.filter((p) => p.views !== null).slice(0, 20).reverse();
+  const maxViews = Math.max(1, ...chart.map((p) => p.views));
 
   return (
     <div>
       <div className="cp-stat-row">
-        <Stat label="Posts tracked (latest cycle)" value={analytics ? analytics.postsTracked : null} />
-        <Stat label="Engagement (latest cycle)" value={analytics ? fmt(analytics.totalEngagement) : null} />
-        <Stat label="Avg per post" value={analytics ? fmt(analytics.averageEngagementRate) : null} />
+        <Stat label="Instagram followers" value={dash(ig.followers)} hint={followerHint(ig)} />
+        <Stat label="Facebook followers" value={dash(fb.followers)} hint={followerHint(fb)} />
+        <Stat label="Views" value={dash(data.totals.views)} hint={'on the ' + data.totals.tracked + ' posts we can read'} />
+        <Stat label="Interactions" value={dash(data.totals.interactions)} hint="likes + comments + shares + saves" />
       </div>
 
       <div className="cp-card">
-        <h3>Platform breakdown — latest cycle</h3>
-        <table className="cp-table">
-          <thead><tr><th>Platform</th><th>Posts</th><th>Engagement</th><th>Reach</th></tr></thead>
-          <tbody>
-            {Object.entries(breakdown).map(([platform, d]) => (
-              <tr key={platform}>
-                <td>{platform}</td><td>{d.posts}</td><td>{fmt(d.engagement)}</td><td>{fmt(d.reach)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="cp-content-head">
+          <h3>By platform</h3>
+          <button className="cp-btn small" disabled={busy} onClick={refresh}>{busy ? 'Refreshing…' : 'Refresh now'}</button>
+        </div>
         <p className="cp-muted">
-          Numbers are sandbox estimates until the platform APIs (TikTok / Instagram / Facebook / YouTube) are connected.
+          Real numbers from the platforms{data.lastRun ? ', last read ' + fmtDate(data.lastRun.at) : ' - the first read happens a minute or two after the server starts'}.
+          They refresh by themselves every {data.refreshEveryHours} hours. "—" means the platform does not give us that number.
         </p>
+        {notice && <p className="cp-muted"><strong>{notice}</strong></p>}
+        <div className="cp-table-scroll">
+          <table className="cp-table">
+            <thead><tr><th>Platform</th><th>Followers</th><th>Posts read</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Shares</th><th>Saves</th></tr></thead>
+            <tbody>
+              {['instagram', 'facebook_page'].map((k) => {
+                const p = data.platforms[k];
+                return (
+                  <tr key={k}>
+                    <td>{PLATFORM_LABEL[k]}</td><td>{dash(p.followers)}</td><td>{p.tracked}/{p.published}</td>
+                    <td>{dash(p.views)}</td><td>{dash(p.reach)}</td><td>{dash(p.likes)}</td>
+                    <td>{dash(p.comments)}</td><td>{dash(p.shares)}</td><td>{dash(p.saves)}</td>
+                  </tr>
+                );
+              })}
+              {['tiktok', 'youtube'].map((k) => (
+                <tr key={k}><td>{PLATFORM_LABEL[k]}</td><td colSpan={8} className="cp-muted">{data.platforms[k].note}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {notes.length > 0 && (
+          <ul className="cp-list cp-muted">{notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
+        )}
       </div>
 
-      {history && history.recent && history.recent.length > 1 && (
+      {data.slots.length > 0 && (
         <div className="cp-card">
-          <h3>Engagement across cycles</h3>
+          <h3>Posting slots — average per post</h3>
+          <table className="cp-table">
+            <thead><tr><th>Platform</th><th>Slot (Tbilisi)</th><th>Posts</th><th>Avg views</th><th>Avg interactions</th></tr></thead>
+            <tbody>
+              {data.slots.map((s) => (
+                <tr key={s.platform + s.slot}>
+                  <td>{PLATFORM_LABEL[s.platform]}</td><td>{s.slot}</td><td>{s.posts}</td><td>{fmt(s.avgViews)}</td><td>{fmt(s.avgInteractions)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {chart.length > 1 && (
+        <div className="cp-card">
+          <h3>Views per post — latest {chart.length}</h3>
           <div className="cp-bars">
-            {[...history.recent].reverse().map((c) => {
-              const max = Math.max(...history.recent.map((x) => x.total_engagement || 0), 1);
-              const h = Math.max(4, Math.round(((c.total_engagement || 0) / max) * 120));
-              return (
-                <div className="cp-bar-wrap" key={c.id} title={`#${c.cycle_number}: ${fmt(c.total_engagement)}`}>
-                  <div className="cp-bar" style={{ height: `${h}px` }} />
-                  <div className="cp-bar-label">#{c.cycle_number}</div>
-                </div>
-              );
-            })}
+            {chart.map((p) => (
+              <div className="cp-bar-wrap" key={p.queue_id} title={PLATFORM_LABEL[p.platform] + ' · ' + fmtDate(p.published_at) + ' · ' + fmt(p.views) + ' views'}>
+                <div className="cp-bar" style={{ height: `${Math.max(4, Math.round((p.views / maxViews) * 120))}px` }} />
+                <div className="cp-bar-label">{p.platform === 'instagram' ? 'IG' : 'FB'} #{p.queue_id}</div>
+              </div>
+            ))}
           </div>
         </div>
       )}
+
+      <div className="cp-card">
+        <h3>Every published post</h3>
+        {data.posts.length === 0 ? <p className="cp-muted">Nothing published yet.</p> : (
+          <div className="cp-table-scroll">
+            <table className="cp-table">
+              <thead><tr><th>When</th><th>Platform</th><th>Post</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Shares</th><th>Saves</th><th>Avg watch</th></tr></thead>
+              <tbody>
+                {data.posts.map((p) => (
+                  <tr key={p.queue_id}>
+                    <td>{fmtDate(p.published_at)}</td>
+                    <td>{PLATFORM_LABEL[p.platform] || p.platform}</td>
+                    <td>
+                      {p.permalink ? <a href={p.permalink} target="_blank" rel="noreferrer">{p.caption || 'open'}</a> : (p.caption || '—')}
+                      {!p.collected && <div className="cp-muted">numbers not collected for {PLATFORM_LABEL[p.platform] || p.platform}</div>}
+                      {p.collected && !p.fetched_at && <div className="cp-muted">not read yet</div>}
+                      {p.error && <div className="cp-muted">{p.error}</div>}
+                    </td>
+                    <td>{dash(p.views)}</td><td>{dash(p.reach)}</td><td>{dash(p.likes)}</td>
+                    <td>{dash(p.comments)}</td><td>{dash(p.shares)}</td><td>{dash(p.saves)}</td><td>{watchSec(p.avg_watch_ms)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Real top posts + slot averages, for Growth Intelligence.
+function RealWhatWorked({ view }) {
+  const { data, error } = useMetrics();
+  if (error === 'not-deployed' || error || !data) return null;
+  if (view === 'schedule') {
+    return (
+      <div className="cp-card">
+        <h3>Your real posts — average views by slot</h3>
+        {data.slots.length === 0 ? <p className="cp-muted">No post numbers yet - they appear after the first refresh.</p> : (
+          <table className="cp-table">
+            <thead><tr><th>Platform</th><th>Slot (Tbilisi)</th><th>Posts</th><th>Avg views</th></tr></thead>
+            <tbody>
+              {data.slots.map((s) => (
+                <tr key={s.platform + s.slot}><td>{PLATFORM_LABEL[s.platform]}</td><td>{s.slot}</td><td>{s.posts}</td><td>{fmt(s.avgViews)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    );
+  }
+  const top = data.posts.filter((p) => p.views !== null).sort((a, b) => b.views - a.views).slice(0, 3);
+  return (
+    <div className="cp-card">
+      <h3>What worked — your top posts (real views)</h3>
+      {top.length === 0 ? <p className="cp-muted">No post numbers yet - they appear after the first refresh.</p> : (
+        <ul className="cp-list">
+          {top.map((p) => (
+            <li key={p.queue_id}>
+              <strong>{fmt(p.views)} views</strong> · {PLATFORM_LABEL[p.platform]} · {p.permalink ? <a href={p.permalink} target="_blank" rel="noreferrer">{p.caption || 'open'}</a> : p.caption}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Monetization -> Opportunities: real audience only, no invented payouts.
+function RealAudience() {
+  const { data, error } = useMetrics();
+  if (error === 'not-deployed') return <p className="cp-muted">Real audience numbers arrive with the next server update.</p>;
+  if (error) return <ErrorBox error={error} />;
+  if (!data) return <Loading />;
+  return (
+    <div className="cp-card">
+      <h3>Your audience today (real)</h3>
+      <table className="cp-kv"><tbody>
+        <tr><td>Instagram followers</td><td>{dash(data.platforms.instagram.followers)}</td></tr>
+        <tr><td>Facebook followers</td><td>{dash(data.platforms.facebook_page.followers)}</td></tr>
+        <tr><td>Views on posts we can read</td><td>{dash(data.totals.views)}</td></tr>
+      </tbody></table>
+      <p className="cp-muted">
+        The "program eligibility", "potential $/month" and opportunity list shown here before were made up by the
+        old demo engine (it assumed 15,000 followers) and have been removed. Record real income in Record Income when it arrives.
+      </p>
     </div>
   );
 }
@@ -350,30 +530,25 @@ export function GrowthSection({ view }) {
   if (!cycle) return <Loading />;
 
   const intel = cycle.phases && cycle.phases.intelligence;
-  const opt = cycle.phases && cycle.phases.optimization;
   if (!intel) return <p className="cp-muted">No intelligence data in the latest cycle.</p>;
 
   if (view === 'schedule') {
     return (
-      <div className="cp-card">
-        <h3>Best posting times (latest research)</h3>
-        <ul className="cp-list">
-          {(intel.bestTimes || []).map((t, i) => <li key={i}>{t}</li>)}
-        </ul>
-        {opt && opt.optimalPostingTimes && (
-          <>
-            <h3>Optimizer confirmation</h3>
-            <ul className="cp-list">
-              {opt.optimalPostingTimes.map((t, i) => <li key={i}>{t}</li>)}
-            </ul>
-          </>
-        )}
+      <div>
+        <RealWhatWorked view="schedule" />
+        <div className="cp-card">
+          <h3>Suggested posting times (Claude's research, not measured)</h3>
+          <ul className="cp-list">
+            {(intel.bestTimes || []).map((t, i) => <li key={i}>{t}</li>)}
+          </ul>
+        </div>
       </div>
     );
   }
 
   return (
     <div>
+      <RealWhatWorked view="gaps" />
       <div className="cp-card">
         <h3>Recommended hashtags</h3>
         <div className="cp-tags">
@@ -386,24 +561,6 @@ export function GrowthSection({ view }) {
           {(intel.contentGaps || []).map((g, i) => <li key={i}>{g}</li>)}
         </ul>
       </div>
-      {opt && opt.trendingTopics && (
-        <div className="cp-card">
-          <h3>Trending topics</h3>
-          <div className="cp-tags">
-            {opt.trendingTopics.map((t, i) => <span className="cp-tag" key={i}>{t}</span>)}
-          </div>
-        </div>
-      )}
-      {opt && opt.recommendations && (
-        <div className="cp-card">
-          <h3>Strategy recommendations</h3>
-          <ul className="cp-list">
-            {opt.recommendations.map((r, i) => (
-              <li key={i}><strong>{r.area}:</strong> {r.proposed} <em>({r.impact})</em></li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
@@ -415,7 +572,6 @@ export function MonetizationSection({ view }) {
   const [error, setError] = useState(null);
   const [form, setForm] = useState({ platform: 'tiktok', source: 'creator_fund', amount: '', currency: 'GEL', note: '' });
   const [saved, setSaved] = useState(false);
-  const { cycle } = useLatestCycle();
 
   const load = useCallback(() => {
     api.get('/api/revenue')
@@ -494,35 +650,7 @@ export function MonetizationSection({ view }) {
   }
 
   if (view === 'opportunities') {
-    const mon = cycle && cycle.phases && cycle.phases.monetization;
-    return (
-      <div>
-        {!mon ? <p className="cp-muted">Run a cycle to refresh eligibility and opportunities.</p> : (
-          <>
-            <div className="cp-card">
-              <h3>Program eligibility</h3>
-              <table className="cp-kv"><tbody>
-                {Object.entries(mon.eligibility || {}).map(([k, v]) => (
-                  <tr key={k}><td>{k}</td><td><span className={`cp-pill ${v ? 'ok' : 'warn'}`}>{v ? 'eligible' : 'not yet'}</span></td></tr>
-                ))}
-              </tbody></table>
-              {mon.estimatedMonthly && <p className="cp-muted">Estimated potential: {mon.estimatedMonthly}/month</p>}
-            </div>
-            <div className="cp-card">
-              <h3>Opportunities</h3>
-              <table className="cp-table">
-                <thead><tr><th>Opportunity</th><th>Potential</th><th>Priority</th></tr></thead>
-                <tbody>
-                  {(mon.opportunities || []).map((o, i) => (
-                    <tr key={i}><td>{o.name}</td><td>{o.potential}</td><td><span className={`cp-pill ${o.priority === 'high' ? 'ok' : 'warn'}`}>{o.priority}</span></td></tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-      </div>
-    );
+    return <RealAudience />;
   }
 
   // ledger (default)

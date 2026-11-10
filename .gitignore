@@ -22,3 +22,6 @@ video/out/
 video/public/jobs/
 video/.env
 prep-frames/
+
+# One-time safety copies written on the server (services/metrics.js)
+backend/backups/

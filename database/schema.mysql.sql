@@ -201,3 +201,32 @@ ALTER TABLE publish_queue ADD COLUMN scheduled_at BIGINT NULL;
 ALTER TABLE publish_queue ADD COLUMN prep_media_id INT NULL;
 -- Sounds (kind 'sound') can be taken out of circulation by the owner.
 ALTER TABLE media ADD COLUMN circulate TINYINT(1) NOT NULL DEFAULT 1;
+
+-- 2026-11-10: REAL numbers from the platforms (services/metrics.js), replacing
+-- the cycle sandbox simulation. One row per published post, refreshed every
+-- 3 hours. NULL = the platform does not give us that number (not the same as 0).
+CREATE TABLE IF NOT EXISTS post_metrics (
+  queue_id     INT PRIMARY KEY,
+  platform     VARCHAR(20) NOT NULL,
+  external_id  VARCHAR(64) NULL,
+  views        BIGINT NULL,
+  reach        BIGINT NULL,
+  likes        BIGINT NULL,
+  comments     BIGINT NULL,
+  shares       BIGINT NULL,
+  saves        BIGINT NULL,
+  avg_watch_ms BIGINT NULL,
+  error        VARCHAR(500) NULL,
+  fetched_at   DATETIME NOT NULL,
+  INDEX idx_post_metrics_platform (platform)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Audience size per platform per day (Tbilisi date), as the platform reports it.
+CREATE TABLE IF NOT EXISTS account_metrics (
+  platform   VARCHAR(20) NOT NULL,
+  day        DATE NOT NULL,
+  followers  BIGINT NULL,
+  posts      BIGINT NULL,
+  fetched_at DATETIME NOT NULL,
+  PRIMARY KEY (platform, day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

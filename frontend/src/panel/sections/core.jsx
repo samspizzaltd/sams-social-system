@@ -247,6 +247,7 @@ export function Overview({ goTo }) {
   const [data, setData] = useState(null);
   const [health, setHealth] = useState(null);
   const [realPublished, setRealPublished] = useState(null);
+  const [real, setReal] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -256,11 +257,13 @@ export function Overview({ goTo }) {
     ])
       .then(([o, h]) => { setData(o.data); setHealth(h.data); })
       .catch((e) => setError(e.response?.data?.error || e.message));
-    // The only numbers that reflect the real accounts come from the publish
-    // queue - the cycle aggregates are the sandbox simulation.
+    // Real numbers only: posts from the publish queue, views and followers
+    // from the platforms (services/metrics.js). The old cycle "sandbox"
+    // engagement was removed on 2026-11-10.
     api.get('/api/publish-queue')
       .then((r) => setRealPublished(r.data.queue.filter((q) => q.status === 'published').length))
       .catch(() => setRealPublished(null));
+    api.get('/api/metrics').then((r) => setReal(r.data)).catch(() => setReal(null));
   }, []);
 
   if (error) return <div><AutopilotCard goTo={goTo} /><ErrorBox error={error} /></div>;
@@ -272,12 +275,12 @@ export function Overview({ goTo }) {
       <AutopilotCard goTo={goTo} />
       <div className="cp-stat-row">
         <Stat label="Cycles completed" value={h ? fmt(h.cyclesCompleted) : '—'} />
-        <Stat label="REAL posts published" value={realPublished === null ? '—' : fmt(realPublished)}
+        <Stat label="Posts published" value={realPublished === null ? '—' : fmt(realPublished)}
           hint="via the publish queue, with your approval" />
-        <Stat label="Simulated posts" value={h ? fmt(h.totalPostsPublished) : '—'}
-          hint="demo numbers from cycle sandbox runs - nothing was posted" />
-        <Stat label="Simulated engagement" value={h ? fmt(h.totalEngagement) : '—'}
-          hint="demo numbers, not from your real accounts" />
+        <Stat label="Views" value={real && real.totals.views !== null ? fmt(real.totals.views) : '—'}
+          hint={real ? 'real, Instagram + Facebook (' + real.totals.tracked + ' posts read)' : 'real numbers from the platforms'} />
+        <Stat label="Followers" value={real && real.totals.followers !== null ? fmt(real.totals.followers) : '—'}
+          hint="real, Instagram + Facebook" />
         <Stat label="Revenue recorded" value={data.revenueTotal !== null ? `₾ ${fmt(data.revenueTotal)}` : '—'} />
         <Stat label="Awaiting approval" value={data.pendingContent} />
       </div>
@@ -308,20 +311,18 @@ export function Overview({ goTo }) {
         <div className="cp-card">
           <h3>Recent cycles</h3>
           <p className="cp-muted">
-            "Published" and "Engagement" here are the cycle sandbox simulation, not your
-            real accounts. Real posting happens only in Media &amp; Publishing → Publish Queue.
+            Cycles research trends and write drafts for you to review. They never post - posting
+            happens only in Media &amp; Publishing → Publish Queue, with your approval.
           </p>
           {data.recentCycles.length === 0 ? <p className="cp-muted">No cycles stored yet.</p> : (
             <table className="cp-table">
-              <thead><tr><th>#</th><th>Status</th><th>Drafts</th><th>Published (sim.)</th><th>Engagement (sim.)</th><th>When</th></tr></thead>
+              <thead><tr><th>#</th><th>Status</th><th>Drafts</th><th>When</th></tr></thead>
               <tbody>
                 {data.recentCycles.map((c) => (
                   <tr key={c.id}>
                     <td>{c.cycle_number}</td>
                     <td><span className={`cp-pill ${c.status === 'completed' ? 'ok' : 'err'}`}>{c.status}</span></td>
                     <td>{c.drafts_approved}/{c.drafts_created}</td>
-                    <td>{c.posts_published}</td>
-                    <td>{fmt(c.total_engagement)}</td>
                     <td>{fmtDate(c.started_at)}</td>
                   </tr>
                 ))}
@@ -504,7 +505,7 @@ function PhaseBlock({ name, data }) {
     <div className="cp-phase">
       <div className="cp-phase-head">
         <strong>{name}</strong>
-        <span className={`cp-pill ${data.status === 'completed' ? 'ok' : 'err'}`}>{data.status}</span>
+        <span className={`cp-pill ${data.status === 'completed' ? 'ok' : data.status === 'skipped' ? 'warn' : 'err'}`}>{data.status}</span>
       </div>
       <pre className="cp-json">{JSON.stringify(data, null, 2)}</pre>
     </div>
@@ -601,8 +602,8 @@ export function CyclesSection({ mode }) {
         <div className="cp-card cp-run-card">
           <h3>Run an autonomous cycle</h3>
           <p className="cp-muted">
-            Research → create → approve → publish → analyze → optimize → monetize.
-            A full run makes ~10 Claude calls and takes 2–4 minutes.
+            Research → write drafts → read the real numbers. A cycle never posts: posting happens
+            in the Publish Queue, with your approval. A full run makes ~10 Claude calls and takes 2–4 minutes.
           </p>
           <button className="cp-btn" disabled={running} onClick={runCycle}>
             {running ? `Running… ${elapsed}s` : 'Run cycle now'}
@@ -614,13 +615,12 @@ export function CyclesSection({ mode }) {
         <h3>Cycle history</h3>
         {history.summary && (
           <p className="cp-muted">
-            {history.summary.cyclesCompleted} completed · {fmt(history.summary.totalEngagement)} total engagement ·
-            avg {fmt(history.summary.avgEngagementPerCycle)} per cycle
+            {history.summary.cyclesCompleted} completed
           </p>
         )}
         {(!history.recent || history.recent.length === 0) ? <p className="cp-muted">No cycles yet.</p> : (
           <table className="cp-table">
-            <thead><tr><th>#</th><th>Status</th><th>Duration</th><th>Drafts</th><th>Published</th><th>Engagement</th><th>When</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Status</th><th>Duration</th><th>Drafts</th><th>When</th><th></th></tr></thead>
             <tbody>
               {history.recent.map((c) => (
                 <tr key={c.id}>
@@ -628,8 +628,6 @@ export function CyclesSection({ mode }) {
                   <td><span className={`cp-pill ${c.status === 'completed' ? 'ok' : 'err'}`}>{c.status}</span></td>
                   <td>{c.duration_ms ? `${Math.round(c.duration_ms / 1000)}s` : '—'}</td>
                   <td>{c.drafts_approved}/{c.drafts_created}</td>
-                  <td>{c.posts_published}</td>
-                  <td>{fmt(c.total_engagement)}</td>
                   <td>{fmtDate(c.started_at)}</td>
                   <td><button className="cp-btn small ghost" onClick={() => openDetail(c.id)}>Detail</button></td>
                 </tr>
@@ -649,10 +647,8 @@ export function CyclesSection({ mode }) {
             <div>
               <PhaseBlock name="Intelligence" data={phases.intelligence} />
               <PhaseBlock name="Production" data={phases.production} />
-              <PhaseBlock name="Distribution" data={phases.distribution} />
-              <PhaseBlock name="Analytics" data={phases.analytics} />
-              <PhaseBlock name="Optimization" data={phases.optimization} />
-              <PhaseBlock name="Monetization" data={phases.monetization} />
+              <PhaseBlock name="Real numbers (at the time of the cycle)" data={phases.analytics} />
+              <PhaseBlock name="What worked (real posts)" data={phases.optimization} />
             </div>
           ) : <p className="cp-muted">No phase data stored for this cycle.</p>}
         </div>

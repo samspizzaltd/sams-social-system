@@ -18,6 +18,8 @@ const youtubeRoutes = require('./routes/youtube');
 const autopilotRoutes = require('./routes/autopilot');
 const autopilot = require('./services/autopilot');
 const scheduler = require('./services/scheduler');
+const metricsRoutes = require('./routes/metrics');
+const metrics = require('./services/metrics');
 const brandConfig = require('./services/brandConfig');
 
 const app = express();
@@ -56,6 +58,7 @@ app.use('/api', harvestRoutes);
 app.use('/api', tiktokRoutes.apiRouter);
 app.use('/api', youtubeRoutes.apiRouter);
 app.use('/api', autopilotRoutes);
+app.use('/api', metricsRoutes); // real platform numbers (read-only)
 
 // Full system diagnostics (JWT-protected; public /health is deliberately slim)
 app.get('/api/system', (req, res) => {
@@ -181,10 +184,15 @@ const server = app.listen(port, '0.0.0.0', () => {
 
   // Connect and migrate after the server is already accepting traffic, so a
   // database problem degrades persistence rather than taking the API down.
-  db.init().catch(err => console.warn('[db] init failed: ' + err.message));
+  // Once connected: remove the old simulated cycle numbers (one time, with a
+  // backup file first - services/metrics.js).
+  db.init()
+    .then((ok) => (ok ? metrics.clearSimulatedNumbers() : null))
+    .catch(err => console.warn('[db] init failed: ' + err.message));
   claude.init();
   scheduler.start(runCycleGuarded);
   autopilot.start();
+  metrics.start(); // real Instagram + Facebook numbers, every 3 hours
 });
 
 server.on('error', (err) => {
