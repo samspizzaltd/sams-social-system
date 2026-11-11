@@ -7,6 +7,7 @@ import {
 } from './sections/growth';
 import { MediaLibrary, RenderQueue } from './sections/media';
 import { PublishQueue } from './sections/publish';
+import { TrendingSounds, Recommendations } from './sections/studio';
 
 const MENU = [
   {
@@ -18,7 +19,9 @@ const MENU = [
     subs: [
       { id: 'queue', label: 'Approval Queue' },
       { id: 'approved', label: 'Approved' },
-      { id: 'rejected', label: 'Rejected' }
+      { id: 'rejected', label: 'Rejected' },
+      { id: 'sounds', label: 'Trending Sounds' },
+      { id: 'recommendations', label: 'Recommendations' }
     ]
   },
   {
@@ -91,6 +94,8 @@ function ControlPanel({ user, onLogout }) {
       case 'content/queue': return <ContentSection status="pending" key="pending" />;
       case 'content/approved': return <ContentSection status="approved" key="approved" />;
       case 'content/rejected': return <ContentSection status="rejected" key="rejected" />;
+      case 'content/sounds': return <TrendingSounds key="sounds" />;
+      case 'content/recommendations': return <Recommendations key="recommendations" />;
       case 'cycles/run': return <CyclesSection mode="run" key="run" />;
       case 'cycles/history': return <CyclesSection mode="history" key="history" />;
       case 'analytics/platforms': return <AnalyticsSection />;

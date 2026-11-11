@@ -4,6 +4,8 @@ const db = require('../database/db');
 const brandConfig = require('./brandConfig');
 const claude = require('./claudeClient');
 const publicRoute = require('./publicRoute');
+const trendSounds = require('./trendSounds');
+const recommendations = require('./recommendations');
 
 // Autopilot (owner request 2026-11-06): "I have provided you with many videos
 // that are ready for publishing - add your magic when publishing them, and
@@ -265,6 +267,129 @@ async function pickSound(prep) {
   return candidates[0];
 }
 
+// What the writer may choose from for this video's sound (owner 2026-11-11:
+// the system follows his Recommendations when it picks sounds). The hard rules
+// stay here, in code - the same ones pickSound() applies: never the sound the
+// previous edit used, a sound from ANOTHER video first (circulation), the
+// owner's own "remake with its own / the next sound" choice wins, and a silent
+// video gets a sound whenever there is one. In rotate mode the video's own
+// audio is offered only when one of his sound recommendations could call for it.
+// Instagram trending sounds: approved ones that trended in the last week
+// (trendSounds.js) - Instagram adds the licensed track to the Instagram post.
+async function soundOptions(prep, analysis, cfg, soundRecs) {
+  const pool = (await db.query(
+    "SELECT m.id, m.title," +
+    " (SELECT COUNT(*) FROM media_prep p WHERE p.sound_media_id = m.id AND p.sound_choice = 'rotated' AND p.status NOT IN ('failed','skipped')) AS uses," +
+    " (SELECT p2.copy_json FROM media_prep p2 WHERE p2.own_sound_id = m.id LIMIT 1) AS from_copy" +
+    " FROM media m WHERE m.kind = 'sound' AND m.circulate = 1 AND m.url_path IS NOT NULL ORDER BY m.id ASC"
+  )) || [];
+  const last = await db.query(
+    "SELECT sound_media_id FROM media_prep WHERE sound_media_id IS NOT NULL AND media_id <> ? ORDER BY updated_at DESC LIMIT 1",
+    [prep.media_id]
+  );
+  const lastId = last && last.length ? Number(last[0].sound_media_id) : null;
+  const ownId = prep.own_sound_id ? Number(prep.own_sound_id) : null;
+  let rotation = pool.filter((s) => Number(s.id) !== lastId);
+  if (!rotation.length) rotation = pool;
+  const others = rotation.filter((s) => Number(s.id) !== ownId);
+  if (others.length) rotation = others;
+
+  // Real Instagram views per post for each sound (services/metrics.js).
+  const perf = (await db.query(
+    "SELECT p.sound_media_id AS sid, COUNT(*) AS posts, ROUND(AVG(pm.views)) AS avg_views" +
+    " FROM publish_queue q JOIN media_prep p ON p.media_id = q.prep_media_id JOIN post_metrics pm ON pm.queue_id = q.id" +
+    " WHERE q.status = 'published' AND q.platform = 'instagram' AND p.sound_media_id IS NOT NULL AND pm.views IS NOT NULL" +
+    ' GROUP BY p.sound_media_id'
+  )) || [];
+  const perfBy = new Map(perf.map((r) => [Number(r.sid), r]));
+  const describe = (s) => {
+    let shows = '';
+    try { shows = JSON.parse(s.from_copy || '{}').what_it_shows || ''; } catch { shows = ''; }
+    const p = perfBy.get(Number(s.id));
+    return {
+      id: Number(s.id),
+      title: s.title || 'sound #' + s.id,
+      from: cut(shows, 160),
+      uses: Number(s.uses) || 0,
+      ig_posts: p ? Number(p.posts) : 0,
+      ig_avg_views: p && p.avg_views != null ? Number(p.avg_views) : null
+    };
+  };
+
+  const hasAudio = !!analysis.has_audio;
+  const explicit = prep.sound_choice === 'own' || prep.sound_choice === 'rotated' ? prep.sound_choice : null;
+  const ownMode = String(cfg.sound_mode || 'rotate').toLowerCase() === 'own';
+  let allowOwn;
+  let allowRotation;
+  if (!hasAudio) {
+    allowRotation = rotation.length > 0;
+    allowOwn = !allowRotation;
+  } else if (explicit === 'own' || (ownMode && explicit !== 'rotated')) {
+    allowOwn = true;
+    allowRotation = false;
+  } else if (explicit === 'rotated') {
+    allowRotation = rotation.length > 0;
+    allowOwn = !allowRotation;
+  } else {
+    allowRotation = rotation.length > 0;
+    allowOwn = !allowRotation || !!(soundRecs && soundRecs.length);
+  }
+
+  const trends = (await trendSounds.approvedFresh(10)) || [];
+  return {
+    hasAudio,
+    allowOwn,
+    rotation: allowRotation ? rotation.map(describe) : [],
+    trends: trends.map((t) => ({
+      audio_id: String(t.audio_id), title: t.title, artist: t.artist, audio_type: t.audio_type,
+      badge: t.badge, age_hours: t.age_hours, uses: Number(t.uses) || 0
+    }))
+  };
+}
+
+const TREND_WORDS = {
+  just_started: 'just started trending', climbing: 'climbing', holding: 'still trending', fading: 'fading', gone: 'no longer trending'
+};
+
+// The writer's output schema for this video: the copy, plus the sound picks
+// limited (enum) to what soundOptions() allows.
+function copySchema(opts) {
+  const s = JSON.parse(JSON.stringify(COPY_SCHEMA));
+  if (!opts || !opts.sound) return s;
+  const soundEnum = (opts.sound.allowOwn ? ['own'] : []).concat(opts.sound.rotation.map((r) => String(r.id)));
+  s.properties.sound_pick = { type: 'string', enum: soundEnum.length ? soundEnum : ['own'] };
+  s.properties.instagram_sound_pick = { type: 'string', enum: ['none'].concat(opts.sound.trends.map((t) => t.audio_id)) };
+  s.properties.sound_reason = { type: 'string' };
+  s.required = s.required.concat(['sound_pick', 'instagram_sound_pick', 'sound_reason']);
+  return s;
+}
+
+// The sound part of the writer's brief.
+function soundBrief(opts) {
+  const o = opts.sound;
+  const lines = ['', 'SOUND - pick ONE for this video (sound_pick):'];
+  if (o.allowOwn) lines.push('- "own": keep the video\'s own audio' + (o.hasAudio ? '' : ' (this video is silent)'));
+  for (const r of o.rotation) {
+    lines.push('- "' + r.id + '": ' + r.title + (r.from ? ' - taken from a video showing: ' + r.from : '') +
+      '; used ' + r.uses + ' time(s)' +
+      (r.ig_posts ? '; Instagram posts with it averaged ' + r.ig_avg_views + ' views (' + r.ig_posts + ' post(s))' : ''));
+  }
+  if (o.allowOwn && o.rotation.length) {
+    lines.push('Default to one of the circulated sounds (the owner wants sounds to travel between videos); pick "own" only when his sound recommendations call for it.');
+  }
+  lines.push('', 'INSTAGRAM TRENDING SOUND (instagram_sound_pick) - optional, for the Instagram post only: Instagram adds this licensed track on top of the video. Pick "none" or one id:');
+  if (!o.trends.length) lines.push('- (none approved right now - pick "none")');
+  for (const t of o.trends) {
+    lines.push('- "' + t.audio_id + '": "' + (t.title || 'untitled') + '"' + (t.artist ? ' by ' + t.artist : '') +
+      ' (' + (t.audio_type === 'original_sound' ? 'original sound' : 'music') + '; ' + (TREND_WORDS[t.badge] || t.badge) +
+      (t.badge === 'just_started' ? ' ' + Math.round(t.age_hours) + ' h ago' : '') + '; used on ' + t.uses + ' of our posts)');
+  }
+  if (o.trends.length) lines.push('Prefer a sound that just started trending or is climbing and fits the mood of the video; pick "none" if none fits or the recommendations say so.');
+  lines.push('', recommendations.promptBlock("The owner's sound recommendations:", opts.recs.sounds) || 'The owner has no sound recommendations yet.');
+  lines.push('sound_reason: one short sentence for the owner saying why you picked these sounds.');
+  return lines.join('\n');
+}
+
 // ---------- step 2: the copywriter ----------
 
 const COPY_SCHEMA = {
@@ -306,7 +431,10 @@ function fallbackCopy(media) {
   };
 }
 
-async function writeCopy(prep, media) {
+// opts (optional): { sound: soundOptions(), recs: {captions, editing, sounds} }
+// - with it the writer also picks the sound(s) and follows the owner's
+// Recommendations. Returns { copy, writer, picks } (picks null = no pick made).
+async function writeCopy(prep, media, opts) {
   const dir = path.join(PREP_DIR, String(prep.media_id));
   const frames = [];
   if (fs.existsSync(dir)) {
@@ -314,7 +442,7 @@ async function writeCopy(prep, media) {
       frames.push(fs.readFileSync(path.join(dir, f)).toString('base64'));
     }
   }
-  if (!frames.length) return { copy: fallbackCopy(media), writer: 'template' };
+  if (!frames.length) return { copy: fallbackCopy(media), writer: 'template', picks: null };
 
   const cfg = await brandConfig.get();
   const analysis = JSON.parse(prep.analysis || '{}');
@@ -327,7 +455,15 @@ async function writeCopy(prep, media) {
     '100 Mirian Mepe St, Tbilisi, Georgia. ' + voice + ' ' + audience + (style ? ' ' + style : '') +
     ' Hard rules: describe ONLY what is visible in the frames. Never invent prices, discounts, offers, opening hours,' +
     ' delivery promises, awards, rankings or ingredients you cannot see. No "best in Tbilisi" style claims.' +
-    ' The file name you are given is a hint at most and may be meaningless.';
+    ' The file name you are given is a hint at most and may be meaningless.' +
+    (opts && opts.recs
+      ? (() => {
+        const lines = [...new Set([].concat(opts.recs.editing || [], opts.recs.captions || []))];
+        const block = recommendations.promptBlock(
+          "\n\nThe owner's recommendations for the hook, end line and captions - follow them unless they break a hard rule above:", lines);
+        return block || '';
+      })()
+      : '');
 
   const content = frames.map((data) => ({
     type: 'image',
@@ -349,11 +485,12 @@ async function writeCopy(prep, media) {
       '- youtube_title: max 90 characters, ends with #Shorts.\n' +
       '- youtube_description: 1-3 lines plus the address line "Sam\'s - 100 Mirian Mepe St, Tbilisi".\n' +
       'Write in English unless the style notes say otherwise.' +
-      (cfg.music_notes ? ' Music approach (for context): ' + cfg.music_notes : '')
+      (cfg.music_notes ? ' Music approach (for context): ' + cfg.music_notes : '') +
+      (opts && opts.sound ? '\n' + soundBrief(opts) : '')
   });
 
-  const out = await claude.generateJSON({ system, prompt: content, schema: COPY_SCHEMA, maxTokens: 4000, effort: 'medium' });
-  if (!out) return { copy: fallbackCopy(media), writer: 'template' };
+  const out = await claude.generateJSON({ system, prompt: content, schema: copySchema(opts), maxTokens: 4000, effort: 'medium' });
+  if (!out) return { copy: fallbackCopy(media), writer: 'template', picks: null };
 
   const copy = {
     what_it_shows: cut(out.what_it_shows, 300),
@@ -368,7 +505,10 @@ async function writeCopy(prep, media) {
   for (const k of ['instagram', 'facebook_page', 'tiktok', 'youtube_title', 'youtube_description']) {
     if (!copy[k]) copy[k] = fallbackCopy(media)[k];
   }
-  return { copy, writer: 'claude' };
+  const picks = opts && opts.sound
+    ? { sound: String(out.sound_pick || ''), instagram: String(out.instagram_sound_pick || ''), reason: cut(out.sound_reason, 240) }
+    : null;
+  return { copy, writer: 'claude', picks };
 }
 
 // Prepared videos the owner has not looked at yet (the review buffer). A video
@@ -413,20 +553,51 @@ async function writeNext() {
   const media = mediaRows[0];
   note('video #' + prep.media_id + ': writing the hook and captions');
 
-  const { copy, writer } = await writeCopy(prep, media);
-
   const analysis = JSON.parse(prep.analysis || '{}');
-  let choice = prep.sound_choice || (String(cfg.sound_mode || 'rotate').toLowerCase() === 'own' ? 'own' : 'rotated');
+  const recs = {
+    captions: await recommendations.forArea('captions'),
+    editing: await recommendations.forArea('editing'),
+    sounds: await recommendations.forArea('sounds')
+  };
+  const options = await soundOptions(prep, analysis, cfg, recs.sounds);
+  const { copy, writer, picks } = await writeCopy(prep, media, { sound: options, recs });
+
+  // The writer's sound pick, checked against what was offered. Without a
+  // valid pick (Claude unavailable) the rotation rules decide, as before.
+  let choice = null;
   let sound = null;
-  if (choice === 'rotated') {
-    sound = await pickSound(prep);
-    if (!sound) choice = 'own';
+  const offered = new Map(options.rotation.map((r) => [String(r.id), r]));
+  if (picks && picks.sound === 'own' && options.allowOwn) {
+    choice = 'own';
+  } else if (picks && offered.has(picks.sound)) {
+    choice = 'rotated';
+    sound = { id: offered.get(picks.sound).id, title: offered.get(picks.sound).title };
   }
-  if (choice === 'own' && !analysis.has_audio) {
-    // A silent video gets a circulated sound if there is one at all.
-    sound = await pickSound(prep);
-    if (sound) choice = 'rotated';
+  if (!choice) {
+    choice = prep.sound_choice || (String(cfg.sound_mode || 'rotate').toLowerCase() === 'own' ? 'own' : 'rotated');
+    if (choice === 'rotated') {
+      sound = await pickSound(prep);
+      if (!sound) choice = 'own';
+    }
+    if (choice === 'own' && !analysis.has_audio) {
+      // A silent video gets a circulated sound if there is one at all.
+      sound = await pickSound(prep);
+      if (sound) choice = 'rotated';
+    }
   }
+
+  // Instagram trending sound (approved by the owner; Instagram adds the
+  // licensed track to the Instagram post only - trendSounds.js).
+  const trendById = new Map(options.trends.map((t) => [t.audio_id, t]));
+  let igTrend = null;
+  if (picks) {
+    if (picks.instagram && picks.instagram !== 'none' && trendById.has(picks.instagram)) igTrend = trendById.get(picks.instagram);
+  } else {
+    // No writer pick: the freshest approved sound that just started or climbs.
+    igTrend = options.trends.find((t) => t.badge === 'just_started' || t.badge === 'climbing') || null;
+  }
+  if (igTrend) copy.ig_audio = { audio_id: igTrend.audio_id, title: igTrend.title, artist: igTrend.artist, audio_type: igTrend.audio_type };
+  if (picks && picks.reason) copy.sound_reason = picks.reason;
 
   const params = {
     prep_media_id: prep.media_id,
@@ -452,7 +623,8 @@ async function writeNext() {
     " WHERE media_id = ? AND status = 'writing'",
     [job.insertId, sound ? sound.id : null, choice, JSON.stringify(copy), writer, prep.media_id]
   );
-  note('video #' + prep.media_id + ': edit queued (' + (sound ? 'sound: ' + (sound.title || '#' + sound.id) : 'its own sound') + ')');
+  note('video #' + prep.media_id + ': edit queued (' + (sound ? 'sound: ' + (sound.title || '#' + sound.id) : 'its own sound') +
+    (copy.ig_audio ? '; Instagram: trending "' + (copy.ig_audio.title || copy.ig_audio.audio_id) + '"' : '') + ')');
 }
 
 // ---------- worker callback: a job finished ----------
@@ -482,12 +654,28 @@ async function stage(prep, outputMediaId) {
     if (takenSet.has(platform)) continue;
     const caption = platform === 'youtube' ? copy.youtube_description : copy[platform];
     if (!caption) continue;
-    const opts = platform === 'youtube' ? JSON.stringify({ title: copy.youtube_title }) : null;
+    let opts = null;
+    if (platform === 'youtube') opts = JSON.stringify({ title: copy.youtube_title });
+    const igAudio = platform === 'instagram' && copy.ig_audio && copy.ig_audio.audio_id ? copy.ig_audio : null;
+    if (igAudio) {
+      opts = JSON.stringify({
+        ig_audio: Object.assign({}, igAudio, {
+          audio_volume: 100,
+          // MagicCut mutes the clip when it lays a circulated sound under it,
+          // so then the edit's own track is music - keep it low under the trend.
+          video_volume: prep.sound_choice === 'own' ? 35 : 10,
+          fallback: true
+        })
+      });
+    }
     const r = await db.query(
       "INSERT INTO publish_queue (platform, media_id, caption, status, post_options, prep_media_id) VALUES (?,?,?,'pending_review',?,?)",
       [platform, outputMediaId, String(caption).slice(0, CAPTION_LIMIT[platform]), opts, prep.media_id]
     );
-    if (r && r.insertId) staged.push(platform);
+    if (r && r.insertId) {
+      staged.push(platform);
+      if (igAudio) await trendSounds.markUsed(igAudio.audio_id);
+    }
   }
   if (staged.length) {
     // The raw version's waiting posts (hand-staged or harvested) give way.

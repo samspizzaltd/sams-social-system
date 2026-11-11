@@ -195,7 +195,7 @@ async function processClaimedRow(row, routes) {
     // owner's TikTok drafts and he posts it from the TikTok app.
     const tiktokDrafts = row.platform === 'tiktok' && routes && routes.tiktok === 'drafts';
     const start = row.platform === 'instagram'
-      ? await metaPublish.igCreateContainer(videoUrl, row.caption)
+      ? await metaPublish.igCreateContainer(videoUrl, row.caption, postOptions)
       : tiktokDrafts
         ? await tiktokPublish.startDraft(row.filename,
             // Same rule as a direct post: the id is saved before any byte.

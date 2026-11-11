@@ -4,6 +4,7 @@ const tiktokPublish = require('../services/tiktokPublish');
 const youtubePublish = require('../services/youtubePublish');
 const autopilot = require('../services/autopilot');
 const publicRoute = require('../services/publicRoute');
+const trendSounds = require('../services/trendSounds');
 
 // The publish review queue: the ONLY path content takes to the real accounts.
 // Staging is harmless; a row goes public only after the owner clicks Approve
@@ -123,6 +124,30 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
       return res.status(400).json({ error: 'Public YouTube uploads are switched off on the server right now - pick Private for now' });
     }
     postOptions = JSON.stringify({ title, privacy_status: b.privacy_status });
+  }
+  if (row[0].platform === 'instagram') {
+    // Instagram trending sound (Content Studio → Trending Sounds): only one the
+    // owner approved, and only when the approve sheet sent it - a post never
+    // goes out with a sound he was not shown.
+    const a = req.body && req.body.ig_audio;
+    if (a && a.audio_id) {
+      const t = await trendSounds.approvedById(String(a.audio_id));
+      if (!t) {
+        return res.status(400).json({ error: 'That trending sound is not approved any more (Content Studio → Trending Sounds) - pick another one or none' });
+      }
+      const vol = (v, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(100, Math.max(1, n)) : d; };
+      postOptions = JSON.stringify({
+        ig_audio: {
+          audio_id: t.audio_id,
+          title: t.title,
+          artist: t.artist,
+          audio_type: t.audio_type,
+          audio_volume: vol(a.audio_volume, 100),
+          video_volume: vol(a.video_volume, 10),
+          fallback: a.fallback !== false
+        }
+      });
+    }
   }
 
   const scheduledAt = when === 'slot' ? await autopilot.nextFreeSlot(row[0].platform) : null;

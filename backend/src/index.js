@@ -20,6 +20,8 @@ const autopilot = require('./services/autopilot');
 const scheduler = require('./services/scheduler');
 const metricsRoutes = require('./routes/metrics');
 const metrics = require('./services/metrics');
+const studioRoutes = require('./routes/studio');
+const trendSounds = require('./services/trendSounds');
 const brandConfig = require('./services/brandConfig');
 
 const app = express();
@@ -59,6 +61,7 @@ app.use('/api', tiktokRoutes.apiRouter);
 app.use('/api', youtubeRoutes.apiRouter);
 app.use('/api', autopilotRoutes);
 app.use('/api', metricsRoutes); // real platform numbers (read-only)
+app.use('/api', studioRoutes); // Content Studio: Trending Sounds + Recommendations
 
 // Full system diagnostics (JWT-protected; public /health is deliberately slim)
 app.get('/api/system', (req, res) => {
@@ -193,6 +196,7 @@ const server = app.listen(port, '0.0.0.0', () => {
   scheduler.start(runCycleGuarded);
   autopilot.start();
   metrics.start(); // real Instagram + Facebook numbers, every 3 hours
+  trendSounds.start(); // Instagram's trending sounds, every 6 hours (read-only)
 });
 
 server.on('error', (err) => {

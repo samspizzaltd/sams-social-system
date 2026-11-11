@@ -39,6 +39,13 @@ function MagicNote({ prep, busy, onRemake }) {
         Sam's logo · 🎵 {sound}
         {prep.writer === 'template' ? ' · captions are TEMPLATES (Claude was offline) - edit them before approving' : ''}
       </div>
+      {copy.ig_audio && (
+        <div>
+          <strong>Instagram:</strong> trending sound "{copy.ig_audio.title || copy.ig_audio.audio_id}"
+          {copy.ig_audio.artist ? ' - ' + copy.ig_audio.artist : ''} (Instagram adds it when it posts)
+        </div>
+      )}
+      {copy.sound_reason && <div><strong>Why these sounds:</strong> {copy.sound_reason}</div>}
       {prep.sound_choice === 'rotated' && prep.sound_url && (
         <audio controls preload="none" src={API_BASE + prep.sound_url} style={{ height: 30, marginTop: 6, maxWidth: '100%' }} />
       )}
@@ -56,6 +63,57 @@ function MagicNote({ prep, busy, onRemake }) {
         </div>
       )}
       {prep.status !== 'staged' && <div className="cp-muted">A new version is being made ({prep.status})…</div>}
+    </div>
+  );
+}
+
+// The Instagram trending sound of one Instagram post (Content Studio →
+// Trending Sounds). Instagram adds the licensed track when it publishes the
+// Reel; the edit's own sound plays under it at the level picked here.
+function IgSoundPicker({ value, trends, onChange, disabled }) {
+  const list = trends.slice();
+  if (value && !list.some((t) => String(t.audio_id) === String(value.audio_id))) {
+    list.unshift({ audio_id: value.audio_id, title: value.title, artist: value.artist, missing: true });
+  }
+  const cur = value ? list.find((t) => String(t.audio_id) === String(value.audio_id)) : null;
+  return (
+    <div className="cp-magic-note" style={{ marginTop: 6 }}>
+      <div className="cp-form">
+        <label className="cp-form-wide">🎵 Instagram trending sound
+          <select value={value ? String(value.audio_id) : ''} disabled={disabled}
+            onChange={(e) => {
+              const t = list.find((x) => String(x.audio_id) === e.target.value);
+              onChange(t ? {
+                audio_id: t.audio_id, title: t.title, artist: t.artist,
+                audio_volume: 100, video_volume: value ? value.video_volume : 10
+              } : null);
+            }}>
+            <option value="">None - the video's own sound</option>
+            {list.map((t) => (
+              <option key={t.audio_id} value={String(t.audio_id)}>
+                {(t.title || 'untitled') + (t.artist ? ' - ' + t.artist : '') + (t.missing ? ' (no longer approved)' : '')}
+              </option>
+            ))}
+          </select>
+        </label>
+        {value && (
+          <label>The video's own sound under it
+            <select value={String(value.video_volume || 10)} disabled={disabled}
+              onChange={(e) => onChange({ ...value, video_volume: Number(e.target.value) })}>
+              {[1, 10, 25, 35, 50, 75, 100].map((v) => <option key={v} value={v}>{v === 1 ? 'off' : v + '%'}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+      {value && cur && cur.preview_url && (
+        <audio controls preload="none" src={cur.preview_url} style={{ height: 30, marginTop: 6, maxWidth: '100%' }} />
+      )}
+      {value && (
+        <div className="cp-muted" style={{ marginTop: 4 }}>
+          Instagram adds this licensed track when it publishes the Reel (Instagram only). If Instagram refuses it, the Reel goes out with the video's own sound.
+          {cur && cur.missing ? ' This sound is no longer approved - pick another one or none, or approving will fail.' : ''}
+        </div>
+      )}
     </div>
   );
 }
@@ -95,6 +153,21 @@ export function PublishQueue() {
   // How each platform's posts go out: direct | drafts (TikTok) | wait
   const [routes, setRoutes] = useState({});
   const tiktokDrafts = routes.tiktok === 'drafts';
+  // Approved Instagram trending sounds, and the owner's change per Instagram
+  // post (row id -> sound | 'none'); no entry = what the autopilot picked.
+  const [igTrends, setIgTrends] = useState([]);
+  const [igPick, setIgPick] = useState({});
+  const igAudioFor = (q) => {
+    const pick = igPick[q.id];
+    if (pick === 'none') return null;
+    const staged = (parseJson(q.post_options) || {}).ig_audio || null;
+    const a = pick || staged;
+    if (!a || !a.audio_id) return null;
+    return {
+      audio_id: a.audio_id, title: a.title, artist: a.artist,
+      audio_volume: a.audio_volume || 100, video_volume: a.video_volume || 10, fallback: a.fallback !== false
+    };
+  };
 
   const load = useCallback(() => {
     api.get('/api/publish-queue')
@@ -122,6 +195,7 @@ export function PublishQueue() {
       });
     api.get('/api/media').then((r) => { if (aliveRef.current) setMedia(r.data.media.filter((m) => m.url_path && (m.kind === 'rendered' || m.kind === 'video'))); }).catch(() => {});
     api.get('/api/content?status=approved').then((r) => { if (aliveRef.current) setContent(r.data.content); }).catch(() => {});
+    api.get('/api/trend-sounds?status=approved').then((r) => { if (aliveRef.current) setIgTrends(r.data.sounds || []); }).catch(() => {});
     api.get('/api/autopilot').then((r) => { if (aliveRef.current) setSystemOn(!!r.data.enabled); }).catch(() => {});
     api.get('/api/prep').then((r) => {
       if (!aliveRef.current) return;
@@ -289,6 +363,7 @@ export function PublishQueue() {
         });
       }
       if (q.platform === 'youtube') Object.assign(body, { title: gs.yt.title, privacy_status: gs.yt.privacy_status });
+      if (q.platform === 'instagram') body.ig_audio = igAudioFor(q);
       try {
         await api.post(`/api/publish-queue/${q.id}/approve`, body);
         done.push(PLATFORM_NAME[q.platform] || q.platform);
@@ -460,6 +535,11 @@ export function PublishQueue() {
       <div className="cp-card" style={{ marginTop: 10, background: 'var(--cp-bg, #faf7f4)' }}>
         <strong>Approve all {gs.ids.length} posts: {pending.map((q) => PLATFORM_NAME[q.platform] || q.platform).join(', ')}</strong>
         <p className="cp-muted" style={{ margin: '6px 0' }}>Each post goes out with the caption shown above it.</p>
+        {pending.some((q) => q.platform === 'instagram' && igAudioFor(q)) && (
+          <p className="cp-muted" style={{ margin: '6px 0' }}>
+            Instagram: with the trending sound picked on its post above ("{(igAudioFor(pending.find((q) => q.platform === 'instagram')) || {}).title || 'trending sound'}").
+          </p>
+        )}
         {tiktokDrafts && pending.some((q) => q.platform === 'tiktok') && (
           <p className="cp-muted" style={{ margin: '6px 0' }}>
             TikTok: at its slot the video arrives in your TikTok inbox (Inbox → System notifications) - tap it, paste the caption and post it from the TikTok app.
@@ -577,6 +657,18 @@ export function PublishQueue() {
       {q.platform === 'youtube' && parseJson(q.post_options) && parseJson(q.post_options).title && (
         <p className="cp-muted" style={{ margin: '4px 0' }}>Title: {parseJson(q.post_options).title}</p>
       )}
+      {q.platform === 'instagram' && ['pending_review', 'failed'].includes(q.status) && (igTrends.length > 0 || igAudioFor(q)) && (
+        <IgSoundPicker value={igAudioFor(q)} trends={igTrends} disabled={busy === q.id}
+          onChange={(v) => setIgPick((p) => ({ ...p, [q.id]: v || 'none' }))} />
+      )}
+      {q.platform === 'instagram' && !['pending_review', 'failed'].includes(q.status) && (() => {
+        const a = (parseJson(q.post_options) || {}).ig_audio;
+        return a ? (
+          <p className="cp-muted" style={{ margin: '4px 0' }}>
+            🎵 Instagram trending sound: {a.title || a.audio_id}{a.artist ? ' - ' + a.artist : ''}
+          </p>
+        ) : null;
+      })()}
       {editing && editing.id === q.id ? (
         <div>
           <textarea rows={5} value={editing.caption} maxLength={5000} style={{ width: '100%' }}
@@ -609,11 +701,11 @@ export function PublishQueue() {
               <ConfirmButton className="cp-btn small" disabled={busy === q.id}
                 label={q.status === 'failed' ? 'Retry · next slot' : 'Approve · next slot'}
                 confirmLabel="Tap again to approve"
-                onConfirm={() => act(q.id, 'approve', { when: 'slot' })} />
+                onConfirm={() => act(q.id, 'approve', { when: 'slot', ...(q.platform === 'instagram' ? { ig_audio: igAudioFor(q) } : {}) })} />
               <ConfirmButton className="cp-btn small ghost" disabled={busy === q.id}
                 label="Approve · publish now"
                 confirmLabel="Publish for real?"
-                onConfirm={() => act(q.id, 'approve', { when: 'now' })} />
+                onConfirm={() => act(q.id, 'approve', { when: 'now', ...(q.platform === 'instagram' ? { ig_audio: igAudioFor(q) } : {}) })} />
             </>
           )
         )}

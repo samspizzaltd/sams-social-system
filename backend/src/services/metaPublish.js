@@ -19,23 +19,50 @@ async function account(platform) {
 
 // ---------- Instagram Reels ----------
 
-async function igCreateContainer(videoUrl, caption) {
+// options.ig_audio (optional, set in the approve sheet): an Instagram trending
+// sound the owner approved (trendSounds.js). Instagram's Audio API attaches its
+// licensed track at creation: audio_configuration {audio_id, audio_volume,
+// video_volume} - video_volume is the edit's own track under it. If Instagram
+// refuses the sound and the owner allowed it (fallback, the default), the Reel
+// is created once more with the video's own sound and the row says so.
+// Retrying container creation is safe: a container publishes nothing by itself.
+async function igCreateContainer(videoUrl, caption, options) {
   const ig = await account('instagram');
   if (!ig) return { ok: false, error: 'Instagram not connected' };
-  try {
-    const params = new URLSearchParams({
-      media_type: 'REELS',
-      video_url: videoUrl,
-      caption: String(caption || '').slice(0, 2200),
-      access_token: ig.access_token
-    });
-    const r = await fetch(GRAPH + '/' + ig.business_account_id + '/media', { method: 'POST', body: params });
-    const j = await r.json();
-    if (!j.id) return { ok: false, error: (j.error && j.error.message) || 'container creation failed' };
-    return { ok: true, creationId: j.id };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
+  const audio = options && options.ig_audio && options.ig_audio.audio_id ? options.ig_audio : null;
+  const vol = (v, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(100, Math.max(1, n)) : d; };
+  const create = async (withAudio) => {
+    try {
+      const params = new URLSearchParams({
+        media_type: 'REELS',
+        video_url: videoUrl,
+        caption: String(caption || '').slice(0, 2200),
+        access_token: ig.access_token
+      });
+      if (withAudio) {
+        params.set('audio_configuration', JSON.stringify({
+          audio_id: String(audio.audio_id),
+          audio_volume: vol(audio.audio_volume, 100),
+          video_volume: vol(audio.video_volume, 10)
+        }));
+      }
+      const r = await fetch(GRAPH + '/' + ig.business_account_id + '/media', { method: 'POST', body: params });
+      const j = await r.json();
+      if (!j.id) return { ok: false, error: (j.error && j.error.message) || 'container creation failed' };
+      return { ok: true, creationId: j.id };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  };
+  const first = await create(!!audio);
+  if (first.ok || !audio || audio.fallback === false) return first;
+  const again = await create(false);
+  if (!again.ok) return again;
+  return {
+    ...again,
+    uploadWarning: 'Instagram refused the trending sound "' + String(audio.title || audio.audio_id).slice(0, 80) + '" (' +
+      String(first.error).slice(0, 160) + ') - posted with the video\'s own sound'
+  };
 }
 
 // Returns {ok, done, error?, mediaId?, permalink?, maybePublished?}

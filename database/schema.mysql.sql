@@ -230,3 +230,55 @@ CREATE TABLE IF NOT EXISTS account_metrics (
   fetched_at DATETIME NOT NULL,
   PRIMARY KEY (platform, day)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 2026-11-11: Trending Sounds radar (services/trendSounds.js). Instagram's own
+-- trending audio list (Instagram Audio API, GET /ig_audio), read every few hours.
+-- One row per sound, plus one sighting per sound per read, so the panel can show
+-- which sounds just started trending, which climb and which fade. Status: new
+-- (waiting for the owner), approved (offered for Instagram posts), rejected.
+CREATE TABLE IF NOT EXISTS trend_sounds (
+  audio_id       VARCHAR(64) PRIMARY KEY,
+  platform       VARCHAR(20) NOT NULL DEFAULT 'instagram',
+  audio_type     VARCHAR(20) NOT NULL,
+  title          VARCHAR(300) NULL,
+  artist         VARCHAR(300) NULL,
+  duration_ms    INT NULL,
+  cover_url      TEXT NULL,
+  preview_url    TEXT NULL,
+  preview_link   TEXT NULL,
+  ads_eligible   TINYINT(1) NULL,
+  status         VARCHAR(12) NOT NULL DEFAULT 'new',
+  first_seen_at  DATETIME NOT NULL,
+  last_seen_at   DATETIME NOT NULL,
+  first_position INT NULL,
+  best_position  INT NULL,
+  last_position  INT NULL,
+  times_seen     INT NOT NULL DEFAULT 1,
+  uses           INT NOT NULL DEFAULT 0,
+  decided_at     DATETIME NULL,
+  created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_trend_status (status, last_seen_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS trend_sightings (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  run_at     DATETIME NOT NULL,
+  audio_id   VARCHAR(64) NOT NULL,
+  audio_type VARCHAR(20) NOT NULL,
+  position   INT NOT NULL,
+  INDEX idx_sight_audio (audio_id, run_at),
+  INDEX idx_sight_run (run_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 2026-11-11: the owner's Recommendations (Content Studio). Free-text guidance
+-- the autopilot follows when it picks sounds and writes hooks, end lines and
+-- captions. areas = comma list of sounds, editing, captions, other.
+CREATE TABLE IF NOT EXISTS recommendations (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  body       TEXT NOT NULL,
+  areas      VARCHAR(100) NOT NULL DEFAULT 'sounds,editing,captions',
+  active     TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
