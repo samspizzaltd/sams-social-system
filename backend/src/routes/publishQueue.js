@@ -120,7 +120,7 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
       return res.status(400).json({ error: 'Pick who can watch this YouTube video' });
     }
     if (b.privacy_status !== 'private' && !youtubePublish.appAudited()) {
-      return res.status(400).json({ error: 'Until Google audits our YouTube API project, uploads can only be Private - pick that for now' });
+      return res.status(400).json({ error: 'Public YouTube uploads are switched off on the server right now - pick Private for now' });
     }
     postOptions = JSON.stringify({ title, privacy_status: b.privacy_status });
   }

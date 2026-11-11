@@ -14,8 +14,10 @@
 //     refuses it, the run report says so instead of inventing a number.
 //   TikTok: our TikTok app has no statistics scopes, and posts go out through
 //     the owner's TikTok inbox, so we never learn the post id - not collected.
-//   YouTube: not collected until Google's API compliance audit is finished -
-//     statistics calls would change what we declared to Google for the audit.
+//   YouTube: not collected yet. (Until 11 Nov 2026 this waited for Google's
+//     API compliance audit, which Google closed as not needed - see
+//     youtubePublish.appAudited. Adding it = videos.list with the readonly
+//     scope we already hold, plus a line in the privacy policy.)
 // NULL in the tables means "the platform did not give us this number", never 0.
 
 const fs = require('fs');
@@ -56,7 +58,7 @@ const FB_FIELD_SETS = [
 ];
 const NOT_COLLECTED = {
   tiktok: 'Our TikTok connection cannot read numbers (no statistics permission, and posts go through your TikTok inbox). See them in the TikTok app.',
-  youtube: 'Added after Google finishes the YouTube API audit. The 2 test uploads are private, so they have no public views.'
+  youtube: 'Not collected yet - YouTube numbers come in a later update. See them in YouTube Studio meanwhile.'
 };
 
 const state = { running: false, lastRun: null, lastManualAt: 0, timer: null, cleanup: null };

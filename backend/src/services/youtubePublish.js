@@ -28,11 +28,18 @@ function appCreds() {
   };
 }
 
-// Google locks uploads from an unaudited API project to Private, whatever
-// privacyStatus is requested. Flip YOUTUBE_APP_AUDITED=true in .env once the
-// YouTube API compliance audit passes.
+// Public uploads are allowed. Google used to lock every upload from an
+// unaudited API project to Private, but lifted that rule on 2 November 2026
+// (YouTube Data API revision history: "Videos uploaded through the
+// videos.insert method from unverified API projects are no longer restricted
+// to private viewing mode"), and on 11 Nov 2026 it closed our compliance
+// request as not needed. So the visibility the owner picks is sent as it is.
+// YOUTUBE_APP_AUDITED=false in .env switches back to Private-only uploads,
+// should Google ever bring the restriction back (the name dates from the
+// audit days). Posts approved while only Private could be picked go back to
+// the owner once - see youtubeReturn.js.
 function appAudited() {
-  return String(process.env.YOUTUBE_APP_AUDITED || '').toLowerCase() === 'true';
+  return String(process.env.YOUTUBE_APP_AUDITED || '').trim().toLowerCase() !== 'false';
 }
 
 // ---------- account + token refresh ----------

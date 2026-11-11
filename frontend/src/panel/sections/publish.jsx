@@ -531,7 +531,7 @@ export function PublishQueue() {
               </label>
               {gs.yt.channel && (
                 <p className="cp-muted" style={{ margin: '4px 0' }}>
-                  YouTube uploads to <strong>{gs.yt.channel.title}</strong>{gs.yt.audited ? '' : ' - Private only until Google audits our project.'}
+                  YouTube uploads to <strong>{gs.yt.channel.title}</strong>{gs.yt.audited ? '' : ' - public uploads are switched off on the server, so Private only.'}
                   {' '}By uploading you agree to the{' '}
                   <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer">YouTube Terms of Service</a>.
                 </p>
@@ -655,8 +655,7 @@ export function PublishQueue() {
               )}
               {!ytSheet.audited && (
                 <p className="cp-muted" style={{ margin: '6px 0' }}>
-                  Until Google audits our YouTube API project, uploads are locked to <strong>Private</strong> -
-                  YouTube won't let them be made public, even from YouTube Studio, until the audit passes.
+                  Public YouTube uploads are switched off on the server right now, so only <strong>Private</strong> can be picked.
                 </p>
               )}
               <div className="cp-form">

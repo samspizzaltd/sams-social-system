@@ -371,10 +371,17 @@ async function writeCopy(prep, media) {
   return { copy, writer: 'claude' };
 }
 
+// Prepared videos the owner has not looked at yet (the review buffer). A video
+// counts while it is being written/rendered, or staged with posts waiting for
+// review and NONE of its posts approved yet - so a video that is already out
+// on some platforms (e.g. a YouTube post sent back for its visibility choice,
+// youtubeReturn.js) does not hold up the next library videos.
 async function preparingCount() {
   const r = await db.query(
     "SELECT COUNT(*) AS n FROM media_prep p WHERE p.status IN ('writing','rendering')" +
-    " OR (p.status = 'staged' AND EXISTS (SELECT 1 FROM publish_queue q WHERE q.prep_media_id = p.media_id AND q.status = 'pending_review'))"
+    " OR (p.status = 'staged' AND EXISTS (SELECT 1 FROM publish_queue q WHERE q.prep_media_id = p.media_id AND q.status = 'pending_review')" +
+    "   AND NOT EXISTS (SELECT 1 FROM publish_queue q2 WHERE q2.prep_media_id = p.media_id" +
+    "     AND q2.status IN ('approved_publishing','publishing','published','unknown','in_drafts')))"
   );
   return r && r.length ? Number(r[0].n) : null;
 }
@@ -745,5 +752,6 @@ module.exports = {
   isOn, setOn, workerSeen, nextFreeSlot, parseSlots,
   saveAnalysis, onJobStatus, prepareAgain, skip, forgetFrames,
   start, status, listPreps, handStaged, PREP_DIR,
-  tick // exported for the test harness
+  tick, // exported for the test harness
+  _preparingCount: preparingCount // test harness
 };

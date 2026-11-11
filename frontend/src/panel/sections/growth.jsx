@@ -128,7 +128,7 @@ function ConnectionsView() {
                   ? 'connected - channel name temporarily unavailable'
                 : youtube && !youtube.configured
                   ? 'Paste the Google keys at api.sams-social-system.sams.ge/auth/youtube/secret-setup first'
-                  : youtube && youtube.channel_id ? 'channel ' + youtube.channel_id : 'Uploads stay Private until Google audits the project'}
+                  : youtube && youtube.channel_id ? 'channel ' + youtube.channel_id : 'not connected yet'}
             </td>
             <td>
               {youtube && youtube.channel_id && youtube.status !== 'disconnected'
