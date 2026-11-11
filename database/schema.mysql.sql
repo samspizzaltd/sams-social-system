@@ -282,3 +282,12 @@ CREATE TABLE IF NOT EXISTS recommendations (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 2026-11-11: Trending Sounds watch list - sounds found by searching
+-- Instagram's audio library for the owner's terms (e.g. Fairuz). source =
+-- trending (seen in Instagram's trending list) or watch (only found by a
+-- search); watch_terms = the terms that found it; watch_seen_at = last time
+-- a search found it.
+ALTER TABLE trend_sounds ADD COLUMN source VARCHAR(12) NOT NULL DEFAULT 'trending';
+ALTER TABLE trend_sounds ADD COLUMN watch_terms VARCHAR(400) NULL;
+ALTER TABLE trend_sounds ADD COLUMN watch_seen_at DATETIME NULL;

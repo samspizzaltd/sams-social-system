@@ -28,7 +28,13 @@ const JUST_STARTED_MIN = 24 * 60;
 const GONE_AFTER_MIN = 3 * 24 * 60;
 const FRESH_DAYS = 7; // an approved sound is offered while it trended in the last 7 days
 const KEEP_SIGHTINGS_DAYS = 45;
-const BADGE_ORDER = { just_started: 0, climbing: 1, holding: 2, fading: 3, gone: 4 };
+const BADGE_ORDER = { just_started: 0, climbing: 1, watch: 2, holding: 2, fading: 3, gone: 4 };
+// Watch list (owner 2026-11-11, e.g. Fairuz songs): every read also searches
+// Instagram's audio library for these terms (search_query on GET /ig_audio).
+// Matches are NOT trends - Instagram gives no counts - they are flagged as
+// watch-list matches and wait for the owner like any other sound.
+const WATCH_KEY = 'trend_watch_terms';
+const MAX_TERMS = 12;
 
 const state = { running: false, lastRun: null, lastManualAt: 0, timer: null, preferToken: 'page' };
 
@@ -99,6 +105,62 @@ function mapItem(x, type) {
   };
 }
 
+function cleanTerms(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(list) ? list : []) {
+    const t = String(raw || '').replace(/\s+/g, ' ').trim();
+    const len = Array.from(t).length;
+    if (len < 2 || len > 40) continue;
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+    if (out.length >= MAX_TERMS) break;
+  }
+  return out;
+}
+
+async function watchTerms() {
+  const rows = await db.query('SELECT cfg_value FROM branding WHERE cfg_key = ?', [WATCH_KEY]);
+  if (!rows || !rows.length) return [];
+  try { return cleanTerms(JSON.parse(rows[0].cfg_value || '[]')); } catch { return []; }
+}
+
+async function setWatchTerms(list) {
+  if (!Array.isArray(list)) return { status: 400, error: 'terms must be a list' };
+  const terms = cleanTerms(list);
+  const r = await db.query(
+    'INSERT INTO branding (cfg_key, cfg_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE cfg_value = ?',
+    [WATCH_KEY, JSON.stringify(terms), JSON.stringify(terms)]
+  );
+  if (r === null) return { status: 503, error: 'Database unavailable' };
+  return { status: 200, terms };
+}
+
+// Store what a watch-list search found. A sound already known keeps its
+// trend data; only the watch fields are added.
+async function saveWatchHit(it, term, runAt) {
+  const have = await db.query('SELECT audio_id, watch_terms FROM trend_sounds WHERE audio_id = ?', [it.audio_id]);
+  if (have === null) throw new Error('database unavailable');
+  if (have.length) {
+    const terms = cleanTerms(String(have[0].watch_terms || '').split('|').concat(term));
+    await db.query(
+      'UPDATE trend_sounds SET watch_terms = ?, watch_seen_at = ?, cover_url = COALESCE(cover_url, ?),' +
+      ' preview_url = COALESCE(?, preview_url), preview_link = COALESCE(preview_link, ?) WHERE audio_id = ?',
+      [terms.join('|').slice(0, 400), runAt, it.cover_url, it.preview_url, it.preview_link, it.audio_id]
+    );
+    return false;
+  }
+  await db.query(
+    'INSERT INTO trend_sounds (audio_id, audio_type, title, artist, duration_ms, cover_url, preview_url, preview_link,' +
+    " ads_eligible, first_seen_at, last_seen_at, times_seen, source, watch_terms, watch_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,'watch',?,?)",
+    [it.audio_id, it.audio_type, it.title, it.artist, it.duration_ms, it.cover_url, it.preview_url, it.preview_link,
+      it.ads_eligible, runAt, runAt, term.slice(0, 400), runAt]
+  );
+  return true;
+}
+
 // One read of both trending lists. Single-flight; never throws.
 async function run(trigger) {
   if (state.running) return state.lastRun;
@@ -130,10 +192,11 @@ async function run(trigger) {
           await db.query(
             'UPDATE trend_sounds SET title = ?, artist = ?, duration_ms = ?, cover_url = COALESCE(?, cover_url),' +
             ' preview_url = COALESCE(?, preview_url), preview_link = COALESCE(?, preview_link), ads_eligible = ?,' +
-            ' last_seen_at = ?, last_position = ?, best_position = LEAST(COALESCE(best_position, ?), ?), times_seen = times_seen + 1' +
+            ' last_seen_at = ?, last_position = ?, best_position = LEAST(COALESCE(best_position, ?), ?), times_seen = times_seen + 1,' +
+            " first_position = COALESCE(first_position, ?), source = 'trending'" +
             ' WHERE audio_id = ?',
             [it.title, it.artist, it.duration_ms, it.cover_url, it.preview_url, it.preview_link, it.ads_eligible,
-              runAt, pos, pos, pos, it.audio_id]
+              runAt, pos, pos, pos, pos, it.audio_id]
           );
         } else {
           await db.query(
@@ -149,6 +212,25 @@ async function run(trigger) {
           [runAt, it.audio_id, it.audio_type, pos]);
       }
       report.lists[type] = { ok: true, seen: items.length, new: fresh };
+    }
+    // Watch list: search Instagram's audio library for each term.
+    const terms = await watchTerms();
+    if (terms.length) {
+      const w = { ok: true, terms: terms.length, seen: 0, new: 0, errors: [] };
+      for (const term of terms) {
+        for (const type of TYPES) {
+          const r = await graphWithAnyToken('/ig_audio?audio_type=' + type + '&search_query=' + encodeURIComponent(term), creds);
+          if (!r.ok) { w.errors.push(term + ' (' + type + '): ' + clip(r.error, 120)); continue; }
+          const raw = Array.isArray(r.body.audio) ? r.body.audio : Array.isArray(r.body.data) ? r.body.data : [];
+          for (const it of raw.map((x) => mapItem(x, type)).filter(Boolean)) {
+            w.seen++;
+            if (await saveWatchHit(it, term, runAt)) w.new++;
+          }
+        }
+      }
+      if (w.errors.length && !w.seen) w.ok = false;
+      w.errors = w.errors.slice(0, 5);
+      report.lists.watch = w;
     }
     await db.query('DELETE FROM trend_sightings WHERE run_at < NOW() - INTERVAL ' + KEEP_SIGHTINGS_DAYS + ' DAY');
     const okLists = Object.values(report.lists).filter((l) => l.ok);
@@ -188,7 +270,8 @@ const BASE_SELECT =
 // gone: not seen for 3 days.
 function withBadge(r) {
   let badge;
-  if (!Number(r.in_latest)) badge = Number(r.unseen_min) > GONE_AFTER_MIN ? 'gone' : 'fading';
+  if (r.source === 'watch') badge = 'watch'; // only found by a watch-list search - no trend data
+  else if (!Number(r.in_latest)) badge = Number(r.unseen_min) > GONE_AFTER_MIN ? 'gone' : 'fading';
   else if (Number(r.age_min) <= JUST_STARTED_MIN && !Number(r.since_start)) badge = 'just_started';
   else if (r.first_position != null && r.last_position != null && Number(r.first_position) - Number(r.last_position) >= 3) badge = 'climbing';
   else badge = 'holding';
@@ -214,16 +297,24 @@ function withBadge(r) {
     last_position: r.last_position,
     times_seen: r.times_seen,
     uses: r.uses,
-    decided_at: r.decided_at
+    decided_at: r.decided_at,
+    source: r.source || 'trending',
+    watch_terms: r.watch_terms ? String(r.watch_terms).split('|').filter(Boolean) : [],
+    watch_seen_at: r.watch_seen_at || null
   };
 }
 
 const byTrend = (a, b) => BADGE_ORDER[a.badge] - BADGE_ORDER[b.badge] ||
   Number(a.last_position || 999) - Number(b.last_position || 999) || String(a.audio_id).localeCompare(String(b.audio_id));
 
-async function list(status) {
-  const where = status === 'all' ? '' : ' WHERE t.status = ?';
-  const rows = await db.query(BASE_SELECT + where + ' ORDER BY t.last_seen_at DESC LIMIT 300', status === 'all' ? [] : [status]);
+// status: new | approved | rejected | all; watchOnly: only watch-list matches.
+async function list(status, watchOnly) {
+  const conds = [];
+  const params = [];
+  if (status !== 'all') { conds.push('t.status = ?'); params.push(status); }
+  if (watchOnly) conds.push('t.watch_terms IS NOT NULL');
+  const where = conds.length ? ' WHERE ' + conds.join(' AND ') : '';
+  const rows = await db.query(BASE_SELECT + where + ' ORDER BY t.last_seen_at DESC LIMIT 300', params);
   if (rows === null) return null;
   return rows.map(withBadge).sort(byTrend);
 }
@@ -247,7 +338,8 @@ async function decide(audioId, status) {
 // put on an Instagram post. Best trend first, least used first.
 async function approvedFresh(limit) {
   const rows = await db.query(
-    BASE_SELECT + " WHERE t.status = 'approved' AND t.last_seen_at > NOW() - INTERVAL " + FRESH_DAYS + ' DAY'
+    BASE_SELECT + " WHERE t.status = 'approved' AND (t.last_seen_at > NOW() - INTERVAL " + FRESH_DAYS + ' DAY' +
+    ' OR t.watch_seen_at > NOW() - INTERVAL ' + FRESH_DAYS + ' DAY)'
   );
   if (rows === null) return null;
   return rows.map(withBadge)
@@ -301,5 +393,6 @@ function status() {
 
 module.exports = {
   run, requestRun, list, counts, decide, approvedFresh, approvedById, markUsed, refreshPreview, start, status,
+  watchTerms, setWatchTerms,
   _state: state // test harness
 };

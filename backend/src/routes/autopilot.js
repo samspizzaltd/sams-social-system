@@ -57,6 +57,16 @@ router.post('/prep/:mediaId/again', async (req, res) => {
   res.json(r.body);
 });
 
+// POST /api/prep/:mediaId/use-pair {pair: 1|2} - re-render the same edit
+// with another of the writer's hook + end-line pairs.
+router.post('/prep/:mediaId/use-pair', async (req, res) => {
+  const id = Number(req.params.mediaId);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid video id' });
+  const r = await autopilot.usePair(id, req.body && req.body.pair);
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  res.json(r.body);
+});
+
 // POST /api/prep/:mediaId/skip - never prepare or post this video
 router.post('/prep/:mediaId/skip', async (req, res) => {
   const id = Number(req.params.mediaId);

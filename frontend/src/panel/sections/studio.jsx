@@ -26,15 +26,57 @@ const BADGE = {
   climbing: { label: '↑ Climbing', pill: 'ok' },
   holding: { label: '● Trending', pill: 'warn' },
   fading: { label: '↓ Fading', pill: 'err' },
-  gone: { label: 'No longer trending', pill: 'err' }
+  gone: { label: 'No longer trending', pill: 'err' },
+  watch: { label: '🎯 Watch list match', pill: 'warn' }
 };
 
 const SOUND_VIEWS = [
   { id: 'new', label: 'Waiting for you' },
   { id: 'approved', label: 'Approved' },
   { id: 'rejected', label: 'Rejected' },
+  { id: 'watch', label: 'Watch list' },
   { id: 'all', label: 'All' }
 ];
+
+// The watch list: names searched in Instagram's sound library on every read.
+function WatchList({ terms, onSaved }) {
+  const [text, setText] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const value = text === null ? (terms || []).join(', ') : text;
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const list = value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+      const r = await api.put('/api/trend-sounds/watch', { terms: list });
+      setText(null);
+      setMsg('Saved ' + r.data.terms.length + ' name(s) - they are searched on the next read (press "Check now" to search right away).');
+      onSaved && onSaved();
+    } catch (e) {
+      setMsg(e.response?.data?.error || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="cp-card">
+      <h3 style={{ marginTop: 0 }}>Watch list</h3>
+      <p className="cp-muted" style={{ margin: '4px 0' }}>
+        Artists, songs or words to look for in Instagram's sound library on every read - for example Fairuz in every spelling.
+        Matches show up under Waiting for you with a 🎯 badge (Instagram gives no play counts, so these are matches, not trends).
+      </p>
+      <label className="cp-form-wide" style={{ display: 'block' }}>Names, separated by commas (up to 12)
+        <input type="text" value={value} maxLength={600} style={{ width: '100%' }}
+          placeholder="Fairuz, فيروز, Fayrouz, Fairouz, Fairoz"
+          onChange={(e) => setText(e.target.value)} />
+      </label>
+      <div className="cp-content-actions">
+        <button className="cp-btn small" disabled={busy || text === null} onClick={save}>Save watch list</button>
+        {msg && <span className="cp-muted">{msg}</span>}
+      </div>
+    </div>
+  );
+}
 
 export function TrendingSounds() {
   const [view, setView] = useState('new');
@@ -47,7 +89,7 @@ export function TrendingSounds() {
   const refreshedRef = useRef(new Set());
 
   const load = useCallback(() => {
-    api.get('/api/trend-sounds?status=' + view)
+    api.get(view === 'watch' ? '/api/trend-sounds?status=all&watch=1' : '/api/trend-sounds?status=' + view)
       .then((r) => { setData(r.data); setError(null); })
       .catch((e) => setError(e.response?.data?.error || e.message));
   }, [view]);
@@ -126,6 +168,7 @@ export function TrendingSounds() {
           <button className="cp-btn small" onClick={checkNow}>Check now</button>
         </div>
       </div>
+      {data && <WatchList terms={data.watch_terms} onSaved={load} />}
       <ErrorBox error={error} />
       {notice && <div className="cp-card cp-muted">{notice}</div>}
       <div className="cp-card">
@@ -157,12 +200,15 @@ export function TrendingSounds() {
                 <div className="cp-muted">
                   {s.artist ? s.artist + ' · ' : ''}{s.audio_type === 'original_sound' ? 'original sound' : 'music'}
                   {s.duration_ms ? ' · ' + Math.round(s.duration_ms / 1000) + ' s' : ''}
-                  {' · #' + (s.last_position || '?') + ' in the list'}
-                  {s.best_position && s.best_position !== s.last_position ? ' (best #' + s.best_position + ')' : ''}
+                  {s.last_position ? ' · #' + s.last_position + ' in the list' : ''}
+                  {s.last_position && s.best_position && s.best_position !== s.last_position ? ' (best #' + s.best_position + ')' : ''}
                   {' · first seen ' + fmtAge(s.age_hours)}
                   {s.badge === 'fading' || s.badge === 'gone' ? ' · last seen ' + fmtAge(s.unseen_hours) : ''}
                   {s.uses ? ' · on ' + s.uses + ' of our posts' : ''}
                 </div>
+                {s.watch_terms && s.watch_terms.length > 0 && (
+                  <div className="cp-muted">🎯 Watch list: {s.watch_terms.join(', ')}</div>
+                )}
                 {s.preview_url && (
                   <audio controls preload="none" src={s.preview_url} style={{ height: 30, marginTop: 6, maxWidth: '100%' }}
                     onError={() => {

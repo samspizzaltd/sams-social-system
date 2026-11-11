@@ -12,9 +12,20 @@ const STATUSES = ['new', 'approved', 'rejected', 'all'];
 router.get('/trend-sounds', async (req, res) => {
   const status = String(req.query.status || 'new');
   if (!STATUSES.includes(status)) return res.status(400).json({ error: 'status must be new, approved, rejected or all' });
-  const sounds = await trendSounds.list(status);
+  const sounds = await trendSounds.list(status, req.query.watch === '1');
   if (sounds === null) return res.status(503).json({ error: 'Database unavailable' });
-  res.json({ sounds, counts: await trendSounds.counts(), radar: trendSounds.status() });
+  res.json({ sounds, counts: await trendSounds.counts(), radar: trendSounds.status(), watch_terms: await trendSounds.watchTerms() });
+});
+
+// GET/PUT /api/trend-sounds/watch {terms: ['Fairuz', 'فيروز', ...]} - the
+// watch list searched on every read (max 12 terms, 2-40 characters each).
+router.get('/trend-sounds/watch', async (req, res) => {
+  res.json({ terms: await trendSounds.watchTerms() });
+});
+router.put('/trend-sounds/watch', async (req, res) => {
+  const r = await trendSounds.setWatchTerms(req.body && req.body.terms);
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  res.json({ ok: true, terms: r.terms });
 });
 
 // POST /api/trend-sounds/check-now - read Instagram's trending lists now

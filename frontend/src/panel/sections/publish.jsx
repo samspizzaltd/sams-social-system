@@ -24,8 +24,23 @@ const COMMIT_ON_UPLOAD = ['tiktok', 'youtube'];
 const parseJson = (t) => { try { return JSON.parse(t || 'null'); } catch { return null; } };
 
 // What the autopilot did to this video, and the remake buttons.
-function MagicNote({ prep, busy, onRemake }) {
+const sec = (n) => (Math.round(Number(n) * 10) / 10) + ' s';
+
+// The writer's edit plan, in plain words.
+function planText(plan) {
+  if (!plan) return null;
+  const parts = (plan.segments || []).map((s) => sec(s.from) + '-' + sec(s.to)).join(' + ');
+  return (plan.cut ? 'keeps ' + parts : 'whole video') +
+    ' · hook ' + sec(plan.hook_start) + '-' + sec(plan.hook_end) +
+    ' · payoff + end line from ' + sec(plan.end_start) +
+    (plan.hold > 0 ? ' · closing shot held ' + sec(plan.hold) : '') +
+    ' · ' + sec(plan.duration) + ' in total';
+}
+
+function MagicNote({ prep, busy, onRemake, onUsePair }) {
   const copy = parseJson(prep.copy_json) || {};
+  const options = Array.isArray(copy.hook_options) ? copy.hook_options : [];
+  const chosen = Number(copy.chosen_pair || 0);
   const sound = prep.sound_choice === 'rotated'
     ? 'circulated sound "' + (prep.sound_title || 'sound #' + prep.sound_media_id) + '"'
     : 'its own sound';
@@ -46,6 +61,28 @@ function MagicNote({ prep, busy, onRemake }) {
         </div>
       )}
       {copy.sound_reason && <div><strong>Why these sounds:</strong> {copy.sound_reason}</div>}
+      {copy.edit_plan && (
+        <div>
+          <strong>Edit plan:</strong> {planText(copy.edit_plan)}
+          {copy.edit_plan.note ? <div className="cp-muted">{copy.edit_plan.note}</div> : null}
+        </div>
+      )}
+      {options.length > 1 && (
+        <div style={{ marginTop: 4 }}>
+          <strong>Hook options:</strong>
+          {options.map((o, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 2 }}>
+              <span>{i + 1}. "{o.hook}" → "{o.end_line}"</span>
+              {i === chosen ? (
+                <span className="cp-pill ok">in the video</span>
+              ) : prep.status === 'staged' && onUsePair ? (
+                <ConfirmButton className="cp-btn small ghost" disabled={!!busy}
+                  label="Use this one" confirmLabel="Re-edit with it?" onConfirm={() => onUsePair(prep.media_id, i)} />
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
       {prep.sound_choice === 'rotated' && prep.sound_url && (
         <audio controls preload="none" src={API_BASE + prep.sound_url} style={{ height: 30, marginTop: 6, maxWidth: '100%' }} />
       )}
@@ -413,6 +450,20 @@ export function PublishQueue() {
     try {
       await api.post(`/api/prep/${mediaId}/again`, { sound });
       setNotice('A new version is being made - it replaces the posts waiting for review and appears here when ready (a few minutes, the video worker on your PC must be running).');
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    } finally {
+      setBusy(0);
+    }
+  };
+
+  // Re-render the same edit with another of the writer's hook + end-line pairs.
+  const usePair = async (mediaId, pair) => {
+    setBusy(-mediaId); setError(null); setNotice(null);
+    try {
+      await api.post(`/api/prep/${mediaId}/use-pair`, { pair });
+      setNotice('Re-editing with that hook - the new version replaces the posts waiting for review and appears here when ready (a few minutes, the video worker on your PC must be running).');
       load();
     } catch (err) {
       setError(err.response?.data?.error || err.message);
@@ -968,7 +1019,7 @@ export function PublishQueue() {
                     ) : <span className="cp-muted">video file missing on the server</span>}
                   </div>
                   <div>
-                    {g.prep && <MagicNote prep={g.prep} busy={busy} onRemake={remake} />}
+                    {g.prep && <MagicNote prep={g.prep} busy={busy} onRemake={remake} onUsePair={usePair} />}
                     {g.rows.map(renderRow)}
                     {renderGroupSheet(g)}
                   </div>

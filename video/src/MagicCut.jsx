@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  AbsoluteFill, Audio, Img, OffthreadVideo, staticFile, useCurrentFrame,
+  AbsoluteFill, Audio, Freeze, Img, OffthreadVideo, Series, staticFile, useCurrentFrame,
   useVideoConfig, interpolate, spring
 } from 'remotion';
 import { BRAND } from './brand.js';
@@ -14,17 +14,70 @@ import { BRAND } from './brand.js';
 //  - the sound: the video's own, or a circulated one from the Sound Library
 //    baked in (platform APIs cannot attach in-app music).
 // Overlays stay inside the area Reels/TikTok/Shorts leave uncovered.
+//
+// Edit plan (2026-11-11, optional - the autopilot's writer makes it from
+// timestamped frames): `segments` = the parts of the video to KEEP, in order
+// (seconds of the original), `hold` = seconds the closing shot is held still,
+// hookStart / hookEnd / endStart = when the hook and the end line show, in
+// seconds of the EDITED video. Without a plan the edit is the whole video
+// with the standard timing, exactly as before.
 
 const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' };
+const within = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
 
-export const MagicCut = ({ video, sound, hook, endLine, fit }) => {
+// The picture: the whole clip, or the kept parts back to back and then the
+// last frame held still.
+function Picture({ video, segments, holdFrames, style, muted, volume }) {
+  const { fps } = useVideoConfig();
+  if (!segments) {
+    return <OffthreadVideo src={staticFile(video)} muted={muted} volume={volume} style={style} />;
+  }
+  const last = segments[segments.length - 1];
+  const lastLen = Math.max(1, Math.round((last.to - last.from) * fps));
+  return (
+    <Series>
+      {segments.map((s, i) => (
+        <Series.Sequence key={i} durationInFrames={Math.max(1, Math.round((s.to - s.from) * fps))}>
+          <OffthreadVideo src={staticFile(video)} trimBefore={Math.round(s.from * fps)}
+            muted={muted} volume={muted ? 0 : 1} style={style} />
+        </Series.Sequence>
+      ))}
+      {holdFrames > 0 && (
+        // The clip is started ON the last kept frame and frozen at its first
+        // frame: inside a sequence the media time stops at the sequence's own
+        // length, so freezing "frame N of the last part" would show the wrong
+        // picture (found in the 2026-11-11 test render).
+        <Series.Sequence durationInFrames={holdFrames}>
+          <Freeze frame={0}>
+            <OffthreadVideo src={staticFile(video)} trimBefore={Math.round(last.from * fps) + lastLen - 1} muted style={style} />
+          </Freeze>
+        </Series.Sequence>
+      )}
+    </Series>
+  );
+}
+
+export const MagicCut = ({ video, sound, hook, endLine, fit, segments, hold, hookStart, hookEnd: hookEndAt, endStart: endStartAt }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
 
-  const hookEnd = Math.min(Math.round(2.8 * fps), Math.floor(durationInFrames * 0.45));
-  const endStart = Math.max(durationInFrames - Math.round(3 * fps), hookEnd + fps);
+  const segs = Array.isArray(segments)
+    ? segments.filter((s) => s && Number(s.to) - Number(s.from) > 0 && Number(s.from) >= 0)
+      .map((s) => ({ from: Number(s.from), to: Number(s.to) }))
+    : [];
+  const plan = segs.length ? segs : null;
+  const holdFrames = plan ? Math.max(0, Math.round((Number(hold) || 0) * fps)) : 0;
+  const num = (v) => (v === undefined || v === null || v === '' ? NaN : Number(v));
 
-  const hookIn = spring({ frame, fps, config: { damping: 14 } });
+  const hookFrom = Number.isFinite(num(hookStart)) ? within(Math.round(num(hookStart) * fps), 0, Math.floor(durationInFrames * 0.4)) : 0;
+  const hookEnd = Number.isFinite(num(hookEndAt))
+    ? within(Math.round(num(hookEndAt) * fps), hookFrom + Math.round(0.8 * fps), Math.floor(durationInFrames * 0.6))
+    : Math.min(Math.round(2.8 * fps), Math.floor(durationInFrames * 0.45));
+  const endStart = Number.isFinite(num(endStartAt))
+    ? within(Math.round(num(endStartAt) * fps), hookEnd + Math.round(0.5 * fps), durationInFrames - fps)
+    : Math.max(durationInFrames - Math.round(3 * fps), hookEnd + fps);
+
+  const hookIn = spring({ frame: frame - hookFrom, fps, config: { damping: 14 } });
   const hookOut = interpolate(frame, [hookEnd - 8, hookEnd], [1, 0], clamp);
   const endIn = spring({ frame: frame - endStart, fps, config: { damping: 14 } });
 
@@ -38,9 +91,7 @@ export const MagicCut = ({ video, sound, hook, endLine, fit }) => {
     <AbsoluteFill style={{ backgroundColor: BRAND.dark, fontFamily: BRAND.font }}>
       {fit === 'contain' && (
         <AbsoluteFill>
-          <OffthreadVideo
-            src={staticFile(video)}
-            muted
+          <Picture video={video} segments={plan} holdFrames={holdFrames} muted
             style={{
               width: '100%', height: '100%', objectFit: 'cover',
               filter: 'blur(42px) brightness(0.55)', transform: 'scale(1.25)'
@@ -49,8 +100,7 @@ export const MagicCut = ({ video, sound, hook, endLine, fit }) => {
         </AbsoluteFill>
       )}
       <AbsoluteFill>
-        <OffthreadVideo
-          src={staticFile(video)}
+        <Picture video={video} segments={plan} holdFrames={holdFrames}
           muted={!!sound}
           volume={sound ? 0 : fadeTail}
           style={{ width: '100%', height: '100%', objectFit: fit === 'contain' ? 'contain' : 'cover' }}
@@ -60,7 +110,7 @@ export const MagicCut = ({ video, sound, hook, endLine, fit }) => {
 
       {/* legibility gradients, only while text is on screen */}
       <AbsoluteFill style={{
-        opacity: hookText ? hookOut : 0,
+        opacity: hookText && frame >= hookFrom ? hookOut : 0,
         background: 'linear-gradient(180deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 45%)'
       }} />
       <AbsoluteFill style={{
@@ -76,7 +126,7 @@ export const MagicCut = ({ video, sound, hook, endLine, fit }) => {
         }}
       />
 
-      {hookText && frame < hookEnd && (
+      {hookText && frame >= hookFrom && frame < hookEnd && (
         <div style={{
           position: 'absolute', left: 70, right: 190, top: 300,
           opacity: hookIn * hookOut,

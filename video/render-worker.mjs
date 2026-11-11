@@ -256,6 +256,24 @@ function buildProps(job, stagedFiles) {
     // One frame short of the measured length, so the last frame always exists.
     props.durationInFrames = Math.max(FPS * 3, Math.floor(seconds * FPS) - 1);
     props.fit = ratio > 0.5 && ratio < 0.65 ? 'cover' : 'contain';
+    // Edit plan from the writer (optional, 2026-11-11): the parts to keep,
+    // the held closing shot and the text times. The length is counted exactly
+    // the way MagicCut lays the parts out, frame by frame.
+    const segs = Array.isArray(params.segments)
+      ? params.segments
+        .map((s) => ({ from: Number(s && s.from), to: Number(s && s.to) }))
+        .filter((s) => Number.isFinite(s.from) && Number.isFinite(s.to) && s.from >= 0 && s.to - s.from >= 0.5)
+        .slice(0, 4)
+      : [];
+    if (segs.length) {
+      props.segments = segs;
+      props.hold = Math.min(3, Math.max(0, Number(params.hold) || 0));
+      const frames = segs.reduce((n, s) => n + Math.max(1, Math.round((s.to - s.from) * FPS)), 0) + Math.round(props.hold * FPS);
+      props.durationInFrames = Math.min(FPS * 180, Math.max(FPS * 3, frames));
+    }
+    if (Number.isFinite(Number(params.hook_start)) && params.hook_start !== null) props.hookStart = Number(params.hook_start);
+    if (Number.isFinite(Number(params.hook_end)) && params.hook_end !== null) props.hookEnd = Number(params.hook_end);
+    if (Number.isFinite(Number(params.end_start)) && params.end_start !== null) props.endStart = Number(params.end_start);
   } else if (job.template === 'ReviewQuote') {
     props.image = firstImage || 'sample.jpg';
     props.quote = params.quote || 'Best shawarma in Tbilisi, hands down.';
@@ -291,12 +309,19 @@ async function analyzeJob(job, jobId, staged, stagingDir) {
   const rotation = Number((vs.tags && vs.tags.rotate) || (sideRot && sideRot.rotation) || 0);
   if (Math.abs(rotation) % 180 === 90) [width, height] = [height, width];
 
+  // 8 frames with their times (2026-11-11): the writer plans the cuts and the
+  // text timing from them, so it must know WHEN each frame is.
   const frames = [];
-  for (const f of [0.12, 0.38, 0.62, 0.88]) {
+  const frameTimes = [];
+  for (const f of [0.06, 0.19, 0.31, 0.44, 0.56, 0.69, 0.81, 0.94]) {
+    const at = Math.round(duration * f * 10) / 10;
     const out = path.join(stagingDir, 'frame-' + frames.length + '.jpg');
-    const r = spawnSync(FFMPEG, ['-v', 'error', '-y', '-ss', (duration * f).toFixed(2), '-i', file,
+    const r = spawnSync(FFMPEG, ['-v', 'error', '-y', '-ss', at.toFixed(2), '-i', file,
       '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '5', out], { encoding: 'utf8' });
-    if (r.status === 0 && fs.existsSync(out)) frames.push(fs.readFileSync(out).toString('base64'));
+    if (r.status === 0 && fs.existsSync(out)) {
+      frames.push(fs.readFileSync(out).toString('base64'));
+      frameTimes.push(at);
+    }
   }
 
   // The sound: reuse the one already pulled from this video, otherwise
@@ -334,7 +359,7 @@ async function analyzeJob(job, jobId, staged, stagingDir) {
   try {
     await apiCall('POST', '/api/prep/analysis', {
       job_id: jobId, media_id: mediaId, duration, width, height,
-      has_audio: !!as, frames, sound_media_id: soundId
+      has_audio: !!as, frames, frame_times: frameTimes, sound_media_id: soundId
     });
   } catch (err) {
     // 409 = the owner reset or skipped this video meanwhile - nothing to do.

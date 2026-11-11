@@ -48,6 +48,37 @@ async function alreadyHarvested(platform, platformMediaId) {
   return !!(rows && rows.length);
 }
 
+// Was this video used before? (2026-11-11) The first library videos were
+// downloaded by hand with the Instagram shortcode in the file name, and the
+// system's own new posts are on the account too - neither may come back as a
+// "repost". Returns a reason string, false, or null when the database is down.
+const likeEsc = (s) => String(s).replace(/[\\%_]/g, (ch) => '\\' + ch);
+function shortcodeOf(permalink) {
+  const m = /instagram\.com\/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]{5,})/.exec(String(permalink || ''));
+  return m ? m[1] : null;
+}
+async function usedBefore(c) {
+  const code = c.platform === 'instagram' ? shortcodeOf(c.permalink) : null;
+  const own = await db.query(
+    'SELECT id FROM publish_queue WHERE published_media_id = ? OR (permalink IS NOT NULL AND permalink LIKE ?) LIMIT 1',
+    [String(c.id), '%' + likeEsc(code || c.id) + '%']
+  );
+  if (own === null) return null;
+  if (own.length) return 'one of the posts this system published';
+  if (code) {
+    const pat = '%' + likeEsc(code) + '%';
+    const lib = await db.query('SELECT id FROM media WHERE title LIKE ? OR filename LIKE ? OR note LIKE ? LIMIT 1', [pat, pat, pat]);
+    if (lib === null) return null;
+    if (lib.length) return 'already in the library (' + code + ')';
+  }
+  return false;
+}
+// The same clip posted on Instagram AND Facebook: same caption start.
+function captionKey(caption) {
+  const k = String(caption || '').toLowerCase().replace(/#[^\s#]+/g, ' ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim().slice(0, 60);
+  return k.length >= 12 ? k : null;
+}
+
 async function graphGet(url) {
   const r = await fetch(url, { signal: AbortSignal.timeout(30 * 1000) });
   const j = await r.json();
@@ -262,8 +293,22 @@ async function runHarvest(minViews, limit) {
     await sweepOrphanFiles();
     note('scanning Instagram + Facebook for videos with >= ' + minViews + ' views (most recent ~150 posts per platform)');
     const [ig, fb] = [await igCandidates(minViews), await fbCandidates(minViews)];
-    const all = [...ig, ...fb].sort((a, b) => b.views - a.views).slice(0, limit);
-    note('found ' + (ig.length + fb.length) + ' qualifying videos (IG ' + ig.length + ', FB ' + fb.length + '), taking top ' + all.length);
+    // Leave out what was used before BEFORE taking the top N, so old library
+    // videos and our own new posts do not use up the places (2026-11-11).
+    const all = [];
+    const captions = new Set();
+    for (const c of [...ig, ...fb].sort((a, b) => b.views - a.views)) {
+      if (all.length >= limit) break;
+      if (await alreadyHarvested(c.platform, c.id)) { state.skipped.push(c.platform + ' ' + c.id + ': already harvested earlier'); continue; }
+      const used = await usedBefore(c);
+      if (used === null) throw new Error('database unavailable while checking ' + c.platform + ' ' + c.id);
+      if (used) { state.skipped.push(c.platform + ' ' + c.id + ' (' + c.views + ' views): ' + used); continue; }
+      const key = captionKey(c.caption);
+      if (key && captions.has(key)) { state.skipped.push(c.platform + ' ' + c.id + ': the same video as another candidate (same caption)'); continue; }
+      if (key) captions.add(key);
+      all.push(c);
+    }
+    note('found ' + (ig.length + fb.length) + ' qualifying videos (IG ' + ig.length + ', FB ' + fb.length + '), taking ' + all.length + ' not used before');
     for (const c of all) {
       try {
         await stageCandidate(c);
@@ -293,4 +338,4 @@ function start(minViews, limit) {
   return { ok: true };
 }
 
-module.exports = { start, status };
+module.exports = { start, status, _usedBefore: usedBefore, _captionKey: captionKey };

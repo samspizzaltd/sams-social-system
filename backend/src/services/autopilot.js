@@ -195,17 +195,24 @@ async function saveAnalysis(payload) {
   const height = Number(payload.height) || null;
   if (!Number.isFinite(duration) || duration <= 0) return { status: 400, error: 'duration missing' };
 
-  // Frames: JPEG only, at most 6, each at most 600 KB.
-  const frames = Array.isArray(payload.frames) ? payload.frames.slice(0, 6) : [];
+  // Frames: JPEG only, at most 10, each at most 600 KB. Since 2026-11-11 the
+  // worker also says WHEN each frame is (frame_times, seconds) - the writer
+  // plans the cuts and the text timing from them.
+  const frames = Array.isArray(payload.frames) ? payload.frames.slice(0, 10) : [];
+  const times = Array.isArray(payload.frame_times) ? payload.frame_times : [];
   const dir = path.join(PREP_DIR, String(mediaId));
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   let kept = 0;
-  for (const b64 of frames) {
+  const keptTimes = [];
+  for (let i = 0; i < frames.length; i++) {
+    const b64 = frames[i];
     if (typeof b64 !== 'string') continue;
     const buf = Buffer.from(b64, 'base64');
     if (buf.length < 100 || buf.length > 600 * 1024 || buf[0] !== 0xff || buf[1] !== 0xd8) continue;
     fs.writeFileSync(path.join(dir, kept + '.jpg'), buf);
+    const t = Number(times[i]);
+    keptTimes.push(Number.isFinite(t) && t >= 0 && t <= duration + 1 ? Math.round(t * 10) / 10 : null);
     kept++;
   }
 
@@ -220,7 +227,8 @@ async function saveAnalysis(payload) {
     width,
     height,
     has_audio: !!payload.has_audio,
-    frames: kept
+    frames: kept,
+    frame_times: keptTimes.every((t) => t !== null) ? keptTimes : null
   };
 
   if (duration < MIN_SECONDS) {
@@ -342,13 +350,14 @@ async function soundOptions(prep, analysis, cfg, soundRecs) {
     rotation: allowRotation ? rotation.map(describe) : [],
     trends: trends.map((t) => ({
       audio_id: String(t.audio_id), title: t.title, artist: t.artist, audio_type: t.audio_type,
-      badge: t.badge, age_hours: t.age_hours, uses: Number(t.uses) || 0
+      badge: t.badge, age_hours: t.age_hours, uses: Number(t.uses) || 0, watch_terms: t.watch_terms || []
     }))
   };
 }
 
 const TREND_WORDS = {
-  just_started: 'just started trending', climbing: 'climbing', holding: 'still trending', fading: 'fading', gone: 'no longer trending'
+  just_started: 'just started trending', climbing: 'climbing', holding: 'still trending', fading: 'fading', gone: 'no longer trending',
+  watch: 'found by the owner\'s watch list'
 };
 
 // The writer's output schema for this video: the copy, plus the sound picks
@@ -360,7 +369,17 @@ function copySchema(opts) {
   s.properties.sound_pick = { type: 'string', enum: soundEnum.length ? soundEnum : ['own'] };
   s.properties.instagram_sound_pick = { type: 'string', enum: ['none'].concat(opts.sound.trends.map((t) => t.audio_id)) };
   s.properties.sound_reason = { type: 'string' };
-  s.required = s.required.concat(['sound_pick', 'instagram_sound_pick', 'sound_reason']);
+  // Edit plan + two more hook pairs (editBrief). No numeric limits here -
+  // structured outputs do not take them; cleanPlan() enforces the limits.
+  const num = { type: 'number' };
+  const str = { type: 'string' };
+  const extra = {
+    alt_hook_1: str, alt_end_line_1: str, alt_hook_2: str, alt_end_line_2: str,
+    cut_1_start: num, cut_1_end: num, cut_2_start: num, cut_2_end: num, cut_3_start: num, cut_3_end: num,
+    hook_start: num, hook_end: num, end_line_start: num, hold_end: num, edit_plan_note: str
+  };
+  Object.assign(s.properties, extra);
+  s.required = s.required.concat(['sound_pick', 'instagram_sound_pick', 'sound_reason'], Object.keys(extra));
   return s;
 }
 
@@ -382,7 +401,9 @@ function soundBrief(opts) {
   for (const t of o.trends) {
     lines.push('- "' + t.audio_id + '": "' + (t.title || 'untitled') + '"' + (t.artist ? ' by ' + t.artist : '') +
       ' (' + (t.audio_type === 'original_sound' ? 'original sound' : 'music') + '; ' + (TREND_WORDS[t.badge] || t.badge) +
-      (t.badge === 'just_started' ? ' ' + Math.round(t.age_hours) + ' h ago' : '') + '; used on ' + t.uses + ' of our posts)');
+      (t.badge === 'just_started' ? ' ' + Math.round(t.age_hours) + ' h ago' : '') +
+      (t.watch_terms && t.watch_terms.length ? '; matches the owner\'s watch list: ' + t.watch_terms.join(', ') : '') +
+      '; used on ' + t.uses + ' of our posts)');
   }
   if (o.trends.length) lines.push('Prefer a sound that just started trending or is climbing and fits the mood of the video; pick "none" if none fits or the recommendations say so.');
   lines.push('', recommendations.promptBlock("The owner's sound recommendations:", opts.recs.sounds) || 'The owner has no sound recommendations yet.');
@@ -465,14 +486,17 @@ async function writeCopy(prep, media, opts) {
       })()
       : '');
 
-  const content = frames.map((data) => ({
-    type: 'image',
-    source: { type: 'base64', media_type: 'image/jpeg', data }
-  }));
+  // Each frame is labelled with its time, so the writer can plan the edit.
+  const times = frameTimes(analysis, frames.length);
+  const content = [];
+  frames.forEach((data, i) => {
+    if (times) content.push({ type: 'text', text: 'Frame ' + (i + 1) + ' - at ' + times[i] + ' s:' });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } });
+  });
   content.push({
     type: 'text',
     text:
-      'These are ' + frames.length + ' frames, in order, from a ' + Math.round(analysis.duration || 0) +
+      'These are ' + frames.length + ' frames, in order, from a ' + (Math.round((analysis.duration || 0) * 10) / 10) +
       '-second vertical video Sam\'s wants to post as a Reel / TikTok / YouTube Short. File name: "' +
       cut(media.title || '', 120) + '".\n\n' +
       'Write:\n' +
@@ -486,7 +510,7 @@ async function writeCopy(prep, media, opts) {
       '- youtube_description: 1-3 lines plus the address line "Sam\'s - 100 Mirian Mepe St, Tbilisi".\n' +
       'Write in English unless the style notes say otherwise.' +
       (cfg.music_notes ? ' Music approach (for context): ' + cfg.music_notes : '') +
-      (opts && opts.sound ? '\n' + soundBrief(opts) : '')
+      (opts && opts.sound ? '\n' + editBrief(analysis, times) + '\n' + soundBrief(opts) : '')
   });
 
   const out = await claude.generateJSON({ system, prompt: content, schema: copySchema(opts), maxTokens: 4000, effort: 'medium' });
@@ -505,10 +529,100 @@ async function writeCopy(prep, media, opts) {
   for (const k of ['instagram', 'facebook_page', 'tiktok', 'youtube_title', 'youtube_description']) {
     if (!copy[k]) copy[k] = fallbackCopy(media)[k];
   }
+  if (opts && opts.sound) {
+    // Three hook + end-line pairs: the best one goes into the edit, the owner
+    // can switch to another in the review (usePair).
+    const alts = [[out.alt_hook_1, out.alt_end_line_1], [out.alt_hook_2, out.alt_end_line_2]]
+      .map(([h, e]) => ({ hook: cut(h, 60), end_line: cut(e, 48) }))
+      .filter((p) => p.hook && p.end_line && !(p.hook === copy.hook && p.end_line === copy.end_line));
+    copy.hook_options = [{ hook: copy.hook, end_line: copy.end_line }].concat(alts);
+    copy.chosen_pair = 0;
+  }
   const picks = opts && opts.sound
-    ? { sound: String(out.sound_pick || ''), instagram: String(out.instagram_sound_pick || ''), reason: cut(out.sound_reason, 240) }
+    ? { sound: String(out.sound_pick || ''), instagram: String(out.instagram_sound_pick || ''), reason: cut(out.sound_reason, 240), plan: out }
     : null;
   return { copy, writer: 'claude', picks };
+}
+
+// When each frame was taken. The 2026-11-11 worker sends the times; older
+// analyses had 4 frames at fixed points of the video.
+function frameTimes(analysis, count) {
+  if (Array.isArray(analysis.frame_times) && analysis.frame_times.length === count) return analysis.frame_times;
+  const d = Number(analysis.duration) || 0;
+  if (count === 4 && d > 0) return [0.12, 0.38, 0.62, 0.88].map((f) => Math.round(d * f * 10) / 10);
+  return null;
+}
+
+// The edit-plan part of the writer's brief (owner 2026-11-11: "a timestamped
+// edit plan showing where to cut, when the text appears, when to reveal the
+// payoff, and how long to hold the closing shot", and three hook + end-line
+// pairs). The numbers are checked by cleanPlan() before anything uses them.
+function editBrief(analysis, times) {
+  const d = Math.round((Number(analysis.duration) || 0) * 10) / 10;
+  return [
+    '',
+    'EDIT PLAN - the original video is ' + d + ' s long' + (times ? ' (the frame times are above)' : '') + '. Plan the edit:',
+    '- cut_1_start/cut_1_end, cut_2_start/cut_2_end, cut_3_start/cut_3_end: the parts of the ORIGINAL video to KEEP, in order, in seconds (use -1 for both numbers of a part you do not need). ' +
+      'Cut slow starts, shaky or empty moments; keep the food at its best; when you are not sure a moment is weak, keep it. The edit must stay at least 5 s long. ' +
+      'To keep the whole video: cut_1 = 0 to ' + d + ' and the other parts -1.',
+    '- On the EDITED video (after the cuts): hook_start and hook_end - the hook shows for 1.5-3 s right at the start; ' +
+      'end_line_start - when the payoff and the end line appear (usually the last 2-4 s); hold_end - 0 to 2.5 s to hold the closing shot still at the very end.',
+    '- edit_plan_note: one or two short sentences for the owner - what you cut and why, and where the payoff is.',
+    'HOOK OPTIONS: hook + end_line are your BEST pair (they go into the edit). alt_hook_1 + alt_end_line_1 and alt_hook_2 + alt_end_line_2 are two more, clearly different pairs. ' +
+      'Each end line pays off its own hook. Same rules for all six: max 6 words, no hashtags, no emoji.'
+  ].join('\n');
+}
+
+const round1 = (n) => Math.round(n * 10) / 10;
+
+// The writer's edit plan, made safe: parts inside the video, in order, not
+// overlapping, at least 1 s each and together at least 5 s (else the whole
+// video), a hold of at most 2.5 s, and text times that fit the edited length.
+// null = no usable plan (the edit then keeps the standard timing).
+function cleanPlan(out, analysis) {
+  const d = Number(analysis && analysis.duration) || 0;
+  if (!out || !(d > 0)) return null;
+  const max = round1(Math.max(0, d - 0.1)); // the last kept frame must exist
+  const segs = [[out.cut_1_start, out.cut_1_end], [out.cut_2_start, out.cut_2_end], [out.cut_3_start, out.cut_3_end]]
+    .map(([a, b]) => [Number(a), Number(b)])
+    .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && a >= 0 && b > a)
+    .map(([a, b]) => [round1(Math.max(0, a)), round1(Math.min(max, b))])
+    .filter(([a, b]) => b - a >= 1)
+    .sort((x, y) => x[0] - y[0]);
+  const merged = [];
+  for (const s of segs) {
+    const last = merged[merged.length - 1];
+    if (last && s[0] <= last[1] + 0.2) last[1] = Math.max(last[1], s[1]);
+    else merged.push([s[0], s[1]]);
+  }
+  const kept = round1(merged.reduce((n, s) => n + (s[1] - s[0]), 0));
+  const whole = !merged.length || kept < Math.min(5, d * 0.6) ||
+    (merged.length === 1 && merged[0][0] <= 0.3 && merged[0][1] >= max - 0.3);
+  const parts = whole ? [[0, max]] : merged;
+  const keptLen = whole ? max : kept;
+  const holdRaw = Number(out.hold_end);
+  const hold = Number.isFinite(holdRaw) ? Math.min(2.5, Math.max(0, round1(holdRaw))) : 0;
+  const total = round1(keptLen + hold);
+  if (total < 3 || total > 180) return null;
+  const hsRaw = Number(out.hook_start);
+  const hs = Number.isFinite(hsRaw) ? Math.min(1.5, Math.max(0, round1(hsRaw))) : 0;
+  const heRaw = Number(out.hook_end);
+  let he = Number.isFinite(heRaw) ? round1(heRaw) : hs + 2.8;
+  he = round1(Math.min(Math.max(he, hs + 1.2), hs + 3.5, total * 0.6));
+  const esRaw = Number(out.end_line_start);
+  let es = Number.isFinite(esRaw) ? round1(esRaw) : total - 3;
+  es = round1(Math.min(Math.max(es, he + 1), total - 1.5));
+  if (es < he + 0.5) es = round1(Math.max(he + 0.5, total - 1.5));
+  return {
+    cut: !whole,
+    segments: parts.map(([from, to]) => ({ from, to })),
+    hold,
+    hook_start: hs,
+    hook_end: he,
+    end_start: es,
+    duration: total,
+    note: cut(out.edit_plan_note, 300)
+  };
 }
 
 // Prepared videos the owner has not looked at yet (the review buffer). A video
@@ -599,15 +713,21 @@ async function writeNext() {
   if (igTrend) copy.ig_audio = { audio_id: igTrend.audio_id, title: igTrend.title, artist: igTrend.artist, audio_type: igTrend.audio_type };
   if (picks && picks.reason) copy.sound_reason = picks.reason;
 
+  // The writer's edit plan, checked (cleanPlan). Cuts and a held closing shot
+  // go to MagicCut as segments; the text times apply either way.
+  const plan = picks ? cleanPlan(picks.plan, analysis) : null;
+  if (plan) copy.edit_plan = plan;
   const params = {
     prep_media_id: prep.media_id,
     hook: copy.hook,
     end_line: copy.end_line,
     sound: choice,
-    duration: analysis.duration,
+    duration: plan ? plan.duration : analysis.duration,
     width: analysis.width,
     height: analysis.height,
-    output_title: '✨ ' + cut(media.title || ('video #' + media.id), 120)
+    output_title: '✨ ' + cut(media.title || ('video #' + media.id), 120),
+    ...(plan ? { hook_start: plan.hook_start, hook_end: plan.hook_end, end_start: plan.end_start } : {}),
+    ...(plan && (plan.cut || plan.hold > 0) ? { segments: plan.segments, hold: plan.hold } : {})
   };
   const mediaIds = [prep.media_id].concat(sound ? [sound.id] : []).join(',');
   const job = await db.query(
@@ -642,11 +762,12 @@ async function stage(prep, outputMediaId) {
   const copy = JSON.parse(prep.copy_json || '{}');
   const platforms = await connectedPlatforms();
   // A platform where the owner already approved (or posted) the raw version
-  // of this video meanwhile gets no second copy.
+  // of this video meanwhile - or an earlier autopilot version of it (a remake
+  // after some posts were approved) - gets no second copy.
   const taken = await db.query(
-    "SELECT DISTINCT platform FROM publish_queue WHERE media_id = ? AND prep_media_id IS NULL" +
+    "SELECT DISTINCT platform FROM publish_queue WHERE ((media_id = ? AND prep_media_id IS NULL) OR prep_media_id = ?)" +
     " AND status IN ('approved_publishing','publishing','published','unknown','in_drafts')",
-    [prep.media_id]
+    [prep.media_id, prep.media_id]
   );
   const takenSet = new Set((taken || []).map((r) => r.platform));
   const staged = [];
@@ -764,6 +885,55 @@ async function prepareAgain(mediaId, sound) {
     [nextStatus, choice, mediaId]
   );
   return { status: 200, body: { ok: true, status: nextStatus } };
+}
+
+// The owner picks another of the writer's hook + end-line pairs: the same
+// edit (sound, cuts, timing) is rendered again with that text - no new
+// writing - and the waiting posts are replaced when it is ready. Refused once
+// any post of this version is approved or out (a new version would post twice).
+async function usePair(mediaId, index) {
+  const i = Number(index);
+  const rows = await db.query('SELECT * FROM media_prep WHERE media_id = ?', [mediaId]);
+  if (rows === null) return { status: 503, error: 'Database unavailable' };
+  if (!rows.length) return { status: 404, error: 'No preparation for that video' };
+  const p = rows[0];
+  if (p.status !== 'staged') return { status: 409, error: 'This video is not waiting for review right now - try again when it is ready' };
+  let copy = {};
+  try { copy = JSON.parse(p.copy_json || '{}'); } catch { copy = {}; }
+  const options = Array.isArray(copy.hook_options) ? copy.hook_options : [];
+  if (!Number.isInteger(i) || i < 0 || i >= options.length) return { status: 400, error: 'No such hook option' };
+  if (Number(copy.chosen_pair || 0) === i) return { status: 409, error: 'That pair is already in the video' };
+  const out = await db.query(
+    "SELECT COUNT(*) AS n FROM publish_queue WHERE prep_media_id = ? AND status IN ('approved_publishing','publishing','published','unknown','in_drafts')",
+    [mediaId]
+  );
+  if (out === null) return { status: 503, error: 'Database unavailable' };
+  if (Number(out[0].n) > 0) return { status: 409, error: 'Some posts of this video are already approved or out - a new version would post twice' };
+  const job = await db.query('SELECT params, media_ids FROM render_jobs WHERE id = ?', [p.render_job_id]);
+  if (!job || !job.length) return { status: 409, error: 'The last edit job is gone - use Remake instead' };
+  let params = {};
+  try { params = JSON.parse(job[0].params || '{}'); } catch { params = {}; }
+  params.hook = options[i].hook;
+  params.end_line = options[i].end_line;
+  copy.hook = options[i].hook;
+  copy.end_line = options[i].end_line;
+  copy.chosen_pair = i;
+  const ins = await db.query(
+    "INSERT INTO render_jobs (template, params, media_ids, status) VALUES ('MagicCut', ?, ?, 'queued')",
+    [JSON.stringify(params), job[0].media_ids]
+  );
+  if (!ins || !ins.insertId) return { status: 503, error: 'Database unavailable' };
+  const upd = await db.query(
+    "UPDATE media_prep SET status = 'rendering', render_job_id = ?, output_media_id = NULL, copy_json = ?, error = NULL WHERE media_id = ? AND status = 'staged'",
+    [ins.insertId, JSON.stringify(copy), mediaId]
+  );
+  if (!upd || !upd.affectedRows) return { status: 409, error: 'The video changed meanwhile - reload' };
+  await db.query(
+    "UPDATE publish_queue SET status = 'dropped', error = 'replaced by a newer version' WHERE prep_media_id = ? AND status = 'pending_review'",
+    [mediaId]
+  );
+  note('video #' + mediaId + ': re-editing with hook option ' + (i + 1));
+  return { status: 200, body: { ok: true, status: 'rendering' } };
 }
 
 async function skip(mediaId) {
@@ -938,8 +1108,9 @@ async function listPreps() {
 
 module.exports = {
   isOn, setOn, workerSeen, nextFreeSlot, parseSlots,
-  saveAnalysis, onJobStatus, prepareAgain, skip, forgetFrames,
+  saveAnalysis, onJobStatus, prepareAgain, usePair, skip, forgetFrames,
   start, status, listPreps, handStaged, PREP_DIR,
   tick, // exported for the test harness
-  _preparingCount: preparingCount // test harness
+  _preparingCount: preparingCount, // test harness
+  _cleanPlan: cleanPlan // test harness
 };
