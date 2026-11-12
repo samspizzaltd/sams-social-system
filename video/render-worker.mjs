@@ -302,16 +302,24 @@ function probeVideo(file) {
   return { hasVideo: !!vs, hasAudio: !!as, duration, width, height };
 }
 
+// The host refuses a request body over about 1 MB that is not a file upload
+// (2026-11-12: a 1.06 MB Describe report got HTTP 413 before it reached the
+// app, with an empty answer; uploads of 25 MB edits pass). So every JSON
+// report stays under REPORT_BUDGET, and frames are grabbed again smaller when
+// a video's frames would not fit.
+const REPORT_BUDGET = 900 * 1024;
+const FRAME_BUDGET = 780 * 1024; // all 8 frames together, base64
+
 // 8 frames with their times (2026-11-11): the writer plans the cuts and the
 // text timing from them, so it must know WHEN each frame is.
-function grabFrames(file, duration, stagingDir) {
+function grabFramesAt(file, duration, stagingDir, width, quality) {
   const frames = [];
   const frameTimes = [];
   for (const f of [0.06, 0.19, 0.31, 0.44, 0.56, 0.69, 0.81, 0.94]) {
     const at = Math.round(duration * f * 10) / 10;
     const out = path.join(stagingDir, 'frame-' + frames.length + '.jpg');
     const r = spawnSync(FFMPEG, ['-v', 'error', '-y', '-ss', at.toFixed(2), '-i', file,
-      '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '5', out], { encoding: 'utf8' });
+      '-frames:v', '1', '-vf', 'scale=' + width + ':-2', '-q:v', String(quality), out], { encoding: 'utf8' });
     if (r.status === 0 && fs.existsSync(out)) {
       frames.push(fs.readFileSync(out).toString('base64'));
       frameTimes.push(at);
@@ -319,6 +327,15 @@ function grabFrames(file, duration, stagingDir) {
   }
   return { frames, frameTimes };
 }
+function grabFrames(file, duration, stagingDir) {
+  let got = null;
+  for (const [width, quality] of [[640, 5], [512, 7], [400, 10]]) {
+    got = grabFramesAt(file, duration, stagingDir, width, quality);
+    if (got.frames.reduce((n, b) => n + b.length, 0) <= FRAME_BUDGET) break;
+  }
+  return got;
+}
+const reportSize = (payload) => Buffer.byteLength(JSON.stringify(payload));
 
 // Autopilot step 1: measure a library video, grab 8 frames for the
 // copywriter, and pull its sound into the Sound Library (once per video).
@@ -372,11 +389,13 @@ async function analyzeJob(job, jobId, staged, stagingDir) {
     }
   }
 
+  const report = {
+    job_id: jobId, media_id: mediaId, duration, width, height,
+    has_audio: !!as, frames, frame_times: frameTimes, sound_media_id: soundId
+  };
+  if (reportSize(report) > REPORT_BUDGET) throw new Error('Analyze: the report is too large for the server (' + Math.round(reportSize(report) / 1024) + ' KB)');
   try {
-    await apiCall('POST', '/api/prep/analysis', {
-      job_id: jobId, media_id: mediaId, duration, width, height,
-      has_audio: !!as, frames, frame_times: frameTimes, sound_media_id: soundId
-    });
+    await apiCall('POST', '/api/prep/analysis', report);
   } catch (err) {
     // 409 = the owner reset or skipped this video meanwhile - nothing to do.
     if (!/HTTP 409/.test(err.message)) throw err;
@@ -426,13 +445,16 @@ async function describeJob(job, jobId, staged, stagingDir) {
     // At most 1024 px on the long side when ffmpeg can read it (Remotion's
     // build has no webp decoder - then the original goes, if small enough).
     const out = path.join(stagingDir, 'photo.jpg');
-    const r = spawnSync(FFMPEG, ['-v', 'error', '-y', '-i', file, '-frames:v', '1',
-      '-vf', "scale='if(gt(iw,ih),min(1024,iw),-2)':'if(gt(iw,ih),-2,min(1024,ih))'", '-q:v', '4', out], { encoding: 'utf8' });
-    if (r.status === 0 && fs.existsSync(out)) {
+    for (const [side, quality] of [[1024, 4], [768, 7], [512, 10]]) {
+      const r = spawnSync(FFMPEG, ['-v', 'error', '-y', '-i', file, '-frames:v', '1',
+        '-vf', "scale='if(gt(iw,ih),min(" + side + ",iw),-2)':'if(gt(iw,ih),-2,min(" + side + ",ih))'", '-q:v', String(quality), out], { encoding: 'utf8' });
+      if (r.status !== 0 || !fs.existsSync(out)) break;
       payload.image = { type: 'image/jpeg', data: fs.readFileSync(out).toString('base64') };
-    } else {
+      if (payload.image.data.length <= FRAME_BUDGET) break;
+    }
+    if (!payload.image) {
       const buf = fs.readFileSync(file);
-      if (buf.length > 3.5 * 1024 * 1024) throw new Error('Describe: the photo is too large and could not be made smaller');
+      if (buf.length > 600 * 1024) throw new Error('Describe: the photo is too large for the server and could not be made smaller (' + ext + ')');
       payload.image = { type: PHOTO_TYPES[ext], data: buf.toString('base64') };
     }
     let size = {};
@@ -442,6 +464,7 @@ async function describeJob(job, jobId, staged, stagingDir) {
     throw new Error('Describe: this file type cannot be analysed (' + ext + ')');
   }
 
+  if (reportSize(payload) > REPORT_BUDGET) throw new Error('Describe: the report is too large for the server (' + Math.round(reportSize(payload) / 1024) + ' KB)');
   try {
     await apiCall('POST', '/api/media/describe-input', payload);
   } catch (err) {
