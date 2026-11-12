@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { describeAudio } from './describe-audio.mjs';
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 20 && !(major === 19 && minor >= 8)) {
@@ -69,8 +70,9 @@ const WATCH = process.argv.includes('--watch');
 // Local whitelists - the server copy of these rules protects the server;
 // this copy protects THIS machine.
 // Analyze = autopilot measuring a library video (frames + sound), MagicCut =
-// the autopilot's branded edit of it.
-const TEMPLATES = new Set(['MenuCard', 'ScriptPromo', 'ReviewQuote', 'Analyze', 'MagicCut']);
+// the autopilot's branded edit of it, Describe = "Analyze & name" in the
+// Library (frames, a photo or a sound picture for the namer - 2026-11-12).
+const TEMPLATES = new Set(['MenuCard', 'ScriptPromo', 'ReviewQuote', 'Analyze', 'MagicCut', 'Describe']);
 const MEDIA_EXT = /\.(jpe?g|png|webp|gif|mp4|mov|webm|m4a|mp3)$/i;
 const MEDIA_ROOTS = (process.env.MEDIA_ROOTS || 'D:\\Projects\\Sams.ge\\images')
   .split(';').map((r) => path.resolve(r.trim())).filter(Boolean);
@@ -282,7 +284,43 @@ function buildProps(job, stagedFiles) {
   return props;
 }
 
-// Autopilot step 1: measure a library video, grab 4 frames for the
+// Length, picture size (turned the right way) and whether there is a sound track.
+function probeVideo(file) {
+  const probe = JSON.parse(execFileSync(FFPROBE,
+    ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', file],
+    { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }));
+  const vs = (probe.streams || []).find((s) => s.codec_type === 'video');
+  const as = (probe.streams || []).find((s) => s.codec_type === 'audio');
+  const duration = Number(probe.format && probe.format.duration) || Number((vs || as || {}).duration) || 0;
+  let width = vs ? Number(vs.width) || null : null;
+  let height = vs ? Number(vs.height) || null : null;
+  if (vs) {
+    const sideRot = (vs.side_data_list || []).find((d) => d.rotation !== undefined);
+    const rotation = Number((vs.tags && vs.tags.rotate) || (sideRot && sideRot.rotation) || 0);
+    if (Math.abs(rotation) % 180 === 90) [width, height] = [height, width];
+  }
+  return { hasVideo: !!vs, hasAudio: !!as, duration, width, height };
+}
+
+// 8 frames with their times (2026-11-11): the writer plans the cuts and the
+// text timing from them, so it must know WHEN each frame is.
+function grabFrames(file, duration, stagingDir) {
+  const frames = [];
+  const frameTimes = [];
+  for (const f of [0.06, 0.19, 0.31, 0.44, 0.56, 0.69, 0.81, 0.94]) {
+    const at = Math.round(duration * f * 10) / 10;
+    const out = path.join(stagingDir, 'frame-' + frames.length + '.jpg');
+    const r = spawnSync(FFMPEG, ['-v', 'error', '-y', '-ss', at.toFixed(2), '-i', file,
+      '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '5', out], { encoding: 'utf8' });
+    if (r.status === 0 && fs.existsSync(out)) {
+      frames.push(fs.readFileSync(out).toString('base64'));
+      frameTimes.push(at);
+    }
+  }
+  return { frames, frameTimes };
+}
+
+// Autopilot step 1: measure a library video, grab 8 frames for the
 // copywriter, and pull its sound into the Sound Library (once per video).
 async function analyzeJob(job, jobId, staged, stagingDir) {
   if (!FFMPEG || !FFPROBE) {
@@ -296,33 +334,11 @@ async function analyzeJob(job, jobId, staged, stagingDir) {
   const file = path.join(HERE, 'public', staged[at]);
   const source = (job.media || []).find((m) => Number(m.id) === mediaId) || {};
 
-  const probe = JSON.parse(execFileSync(FFPROBE,
-    ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', file],
-    { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }));
-  const vs = (probe.streams || []).find((s) => s.codec_type === 'video');
-  const as = (probe.streams || []).find((s) => s.codec_type === 'audio');
-  if (!vs) throw new Error('Analyze: no picture track in this file');
-  const duration = Number(probe.format && probe.format.duration) || Number(vs.duration) || 0;
-  let width = Number(vs.width) || null;
-  let height = Number(vs.height) || null;
-  const sideRot = (vs.side_data_list || []).find((d) => d.rotation !== undefined);
-  const rotation = Number((vs.tags && vs.tags.rotate) || (sideRot && sideRot.rotation) || 0);
-  if (Math.abs(rotation) % 180 === 90) [width, height] = [height, width];
-
-  // 8 frames with their times (2026-11-11): the writer plans the cuts and the
-  // text timing from them, so it must know WHEN each frame is.
-  const frames = [];
-  const frameTimes = [];
-  for (const f of [0.06, 0.19, 0.31, 0.44, 0.56, 0.69, 0.81, 0.94]) {
-    const at = Math.round(duration * f * 10) / 10;
-    const out = path.join(stagingDir, 'frame-' + frames.length + '.jpg');
-    const r = spawnSync(FFMPEG, ['-v', 'error', '-y', '-ss', at.toFixed(2), '-i', file,
-      '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '5', out], { encoding: 'utf8' });
-    if (r.status === 0 && fs.existsSync(out)) {
-      frames.push(fs.readFileSync(out).toString('base64'));
-      frameTimes.push(at);
-    }
-  }
+  const v = probeVideo(file);
+  if (!v.hasVideo) throw new Error('Analyze: no picture track in this file');
+  const { duration, width, height } = v;
+  const as = v.hasAudio;
+  const { frames, frameTimes } = grabFrames(file, duration, stagingDir);
 
   // The sound: reuse the one already pulled from this video, otherwise
   // extract it - unless the track is silent (nothing worth circulating).
@@ -370,6 +386,73 @@ async function analyzeJob(job, jobId, staged, stagingDir) {
   console.log('[worker] job #' + jobId + ' (Analyze) DONE - ' + duration.toFixed(1) + ' s, ' + frames.length + ' frames');
 }
 
+// "Analyze & name" (Library, 2026-11-12): what the namer on the server needs
+// to see one item - 8 frames of a video, a photo, or the picture and the
+// measurements of a sound (Claude cannot hear, describe-audio.mjs).
+const PHOTO_TYPES = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
+async function describeJob(job, jobId, staged, stagingDir) {
+  if (!FFMPEG || !FFPROBE) {
+    throw new Error('ffmpeg/ffprobe not found (expected inside @remotion/compositor-win32-x64-msvc) - run npm install in video/');
+  }
+  const params = parseParams(job);
+  const mediaId = Number(params.describe_media_id || (job.media && job.media[0] && job.media[0].id));
+  if (!Number.isInteger(mediaId)) throw new Error('Describe: no media id');
+  if (!staged.length) throw new Error('Describe: the file could not be staged');
+  const file = path.join(HERE, 'public', staged[0]);
+  const ext = path.extname(file).toLowerCase();
+  const payload = { job_id: jobId, media_id: mediaId };
+
+  if (isVideoFile(file)) {
+    const v = probeVideo(file);
+    if (!v.hasVideo) throw new Error('Describe: no picture track in this file');
+    const { frames, frameTimes } = grabFrames(file, v.duration, stagingDir);
+    if (!frames.length) throw new Error('Describe: no frame could be read from this video');
+    payload.frames = frames;
+    payload.frame_times = frameTimes;
+    payload.facts = { duration: v.duration, width: v.width, height: v.height, has_audio: v.hasAudio };
+    if (v.hasAudio) {
+      try {
+        payload.facts.audio = describeAudio(FFMPEG, file, stagingDir, { picture: false }).facts;
+      } catch (err) {
+        console.warn('[worker] media #' + mediaId + ': sound not measured - ' + err.message);
+      }
+    }
+  } else if (isSoundFile(file)) {
+    const v = probeVideo(file);
+    const a = describeAudio(FFMPEG, file, stagingDir);
+    payload.spectrogram = a.spectrogram;
+    payload.facts = Object.assign({ duration: v.duration }, a.facts);
+  } else if (PHOTO_TYPES[ext]) {
+    // At most 1024 px on the long side when ffmpeg can read it (Remotion's
+    // build has no webp decoder - then the original goes, if small enough).
+    const out = path.join(stagingDir, 'photo.jpg');
+    const r = spawnSync(FFMPEG, ['-v', 'error', '-y', '-i', file, '-frames:v', '1',
+      '-vf', "scale='if(gt(iw,ih),min(1024,iw),-2)':'if(gt(iw,ih),-2,min(1024,ih))'", '-q:v', '4', out], { encoding: 'utf8' });
+    if (r.status === 0 && fs.existsSync(out)) {
+      payload.image = { type: 'image/jpeg', data: fs.readFileSync(out).toString('base64') };
+    } else {
+      const buf = fs.readFileSync(file);
+      if (buf.length > 3.5 * 1024 * 1024) throw new Error('Describe: the photo is too large and could not be made smaller');
+      payload.image = { type: PHOTO_TYPES[ext], data: buf.toString('base64') };
+    }
+    let size = {};
+    try { const v = probeVideo(file); size = { width: v.width, height: v.height }; } catch { size = {}; }
+    payload.facts = size;
+  } else {
+    throw new Error('Describe: this file type cannot be analysed (' + ext + ')');
+  }
+
+  try {
+    await apiCall('POST', '/api/media/describe-input', payload);
+  } catch (err) {
+    // 409 = the owner renamed it or asked again meanwhile - nothing to do.
+    if (!/HTTP 409/.test(err.message)) throw err;
+    console.log('[worker] media #' + mediaId + ': naming no longer wanted');
+  }
+  await apiCall('POST', '/api/render-jobs/' + jobId + '/status', { status: 'done' });
+  console.log('[worker] job #' + jobId + ' (Describe) DONE - media #' + mediaId);
+}
+
 async function renderJob(job) {
   // Re-validate everything this machine will act on. The server is not trusted.
   const jobId = Number(job.id);
@@ -383,9 +466,10 @@ async function renderJob(job) {
   fs.mkdirSync(stagingDir, { recursive: true });
 
   const staged = await stageAssets({ ...job, id: jobId }, stagingDir);
-  if (job.template === 'Analyze') {
+  if (job.template === 'Analyze' || job.template === 'Describe') {
     try {
-      await analyzeJob(job, jobId, staged, stagingDir);
+      if (job.template === 'Analyze') await analyzeJob(job, jobId, staged, stagingDir);
+      else await describeJob(job, jobId, staged, stagingDir);
     } finally {
       fs.rmSync(stagingDir, { recursive: true, force: true });
     }

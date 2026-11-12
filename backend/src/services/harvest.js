@@ -67,7 +67,8 @@ async function usedBefore(c) {
   if (own.length) return 'one of the posts this system published';
   if (code) {
     const pat = '%' + likeEsc(code) + '%';
-    const lib = await db.query('SELECT id FROM media WHERE title LIKE ? OR filename LIKE ? OR note LIKE ? LIMIT 1', [pat, pat, pat]);
+    // original_title: the name before Analyze & name renamed it (mediaNamer.js).
+    const lib = await db.query('SELECT id FROM media WHERE title LIKE ? OR original_title LIKE ? OR filename LIKE ? OR note LIKE ? LIMIT 1', [pat, pat, pat, pat]);
     if (lib === null) return null;
     if (lib.length) return 'already in the library (' + code + ')';
   }

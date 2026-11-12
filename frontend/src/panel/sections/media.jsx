@@ -27,9 +27,109 @@ const PREP_LABEL = {
   skipped: ['err', 'skipped - will not be posted']
 };
 
+// "Analyze & name" (owner 2026-11-12): the system looks at an item and names
+// it after what is in it, with a one-line summary and tags.
+const NAME_LABEL = {
+  queued: ['warn', 'waiting to be analysed'],
+  working: ['warn', 'being analysed…'],
+  failed: ['err', 'could not be named']
+};
+const NAMEABLE = ['video', 'rendered', 'photo', 'sound'];
+
+function NameCell({ m, naming, ready }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState('');
+  const busy = m.ai_status === 'queued' || m.ai_status === 'working';
+  const [pill, label] = NAME_LABEL[m.ai_status] || [];
+  const tags = String(m.ai_tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const renamed = m.original_title && m.original_title !== m.title;
+  const save = async (e) => {
+    e.preventDefault();
+    if (await naming.rename(m.id, text)) setEditing(false);
+  };
+  return (
+    <div className="cp-name-cell">
+      {editing ? (
+        <form className="cp-name-edit" onSubmit={save}>
+          <input type="text" value={text} maxLength={120} autoFocus onChange={(e) => setText(e.target.value)} />
+          <button className="cp-btn small" type="submit">Save</button>
+          <button className="cp-btn small ghost" type="button" onClick={() => setEditing(false)}>Cancel</button>
+        </form>
+      ) : (
+        <div><span className="cp-muted">#{m.id}</span> <strong>{m.title || '—'}</strong></div>
+      )}
+      {m.ai_summary ? <div className="cp-name-summary">{m.ai_summary}</div> : null}
+      {tags.length > 0 && (
+        <div className="cp-tags cp-name-tags">{tags.map((t) => <span key={t} className="cp-tag">{t}</span>)}</div>
+      )}
+      {renamed ? <div className="cp-name-old">was: {m.original_title}</div> : null}
+      {pill ? (
+        <div className="cp-name-state">
+          <span className={'cp-pill ' + pill}>{label}</span>
+          {m.ai_status === 'failed' && m.ai_error ? <span className="cp-muted"> {m.ai_error}</span> : null}
+        </div>
+      ) : null}
+      {ready && <div className="cp-content-actions cp-name-actions">
+        <button type="button" className="cp-btn small ghost" disabled={busy} onClick={() => naming.describe(m.id)}>
+          {m.ai_status === 'done' || m.title_source ? '🔍 Name again' : '🔍 Analyze & name'}
+        </button>
+        {!editing && (
+          <button type="button" className="cp-btn small ghost" onClick={() => { setText(m.title || ''); setEditing(true); }}>
+            Edit name
+          </button>
+        )}
+        {renamed && (
+          <ConfirmButton className="cp-btn small ghost" label="Old name back" confirmLabel="Use the old name?"
+            onConfirm={() => naming.restore(m.id)} />
+        )}
+      </div>}
+    </div>
+  );
+}
+
+function NamingCard({ status, media, naming, busy }) {
+  const counts = (status && status.counts) || {};
+  const notNamed = (media || []).filter((m) => NAMEABLE.includes(m.kind) && m.title_source !== 'owner' &&
+    (!m.ai_status || m.ai_status === 'failed')).length;
+  const waiting = (counts.queued || 0) + (counts.working || 0);
+  return (
+    <div className="cp-card">
+      <h3>🔍 Analyze &amp; name</h3>
+      <p className="cp-muted">
+        The system looks at each video, photo and sound and names it after what is in it - with a one-line summary and
+        tags - so you can find things at a glance. Sounds are named from a picture of the sound and the video they came
+        from: the kind of sound is recognised (music, singing, speech, kitchen noise, the beat), the song itself is not.
+        The old name is kept - you can always put it back.
+      </p>
+      {status === false ? (
+        <p className="cp-muted" style={{ marginBottom: 0 }}>
+          This arrives with the next server update - the buttons appear here as soon as the server has it.
+        </p>
+      ) : (
+      <div className="cp-content-actions cp-name-bar">
+        <button type="button" className="cp-btn" disabled={busy || notNamed === 0} onClick={naming.describeAll}>
+          {notNamed ? 'Name everything not named yet (' + notNamed + ')' : 'Everything is named'}
+        </button>
+        <label className="cp-check">
+          <input type="checkbox" checked={!!(status && status.auto)} disabled={!status}
+            onChange={(e) => naming.setAuto(e.target.checked)} />
+          Name new uploads automatically
+        </label>
+      </div>
+      )}
+      {status && (
+        <p className="cp-muted" style={{ marginTop: 8, marginBottom: 0 }}>
+          Named: {counts.done || 0} · waiting: {waiting} · could not be named: {counts.failed || 0}
+          {waiting > 0 ? ' - items the system has not looked at before need the video worker on your PC.' : ''}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // The sounds pulled out of the library videos (plus any the owner uploads).
 // The autopilot circulates them across edits - least-used first.
-function SoundLibrary({ sounds, preps, onChanged, setError }) {
+function SoundLibrary({ sounds, preps, onChanged, setError, naming, namingReady }) {
   const uses = {};
   for (const p of Object.values(preps)) {
     if (p.sound_choice === 'rotated' && p.sound_media_id && !['failed', 'skipped'].includes(p.status)) {
@@ -62,7 +162,7 @@ function SoundLibrary({ sounds, preps, onChanged, setError }) {
           <tbody>
             {sounds.map((m) => (
               <tr key={m.id}>
-                <td>#{m.id} {m.title || 'sound'}</td>
+                <td><NameCell m={m} naming={naming} ready={namingReady} /></td>
                 <td>{m.url_path ? <audio controls preload="none" src={API_BASE + m.url_path} style={{ height: 30 }} /> : '—'}</td>
                 <td>{uses[m.id] || 0}</td>
                 <td>
@@ -94,10 +194,14 @@ export function MediaLibrary() {
   const [preps, setPreps] = useState({});
   // Videos the autopilot leaves alone: already posted / on their way, or dropped.
   const [leftAlone, setLeftAlone] = useState({ posted: [], dropped: [] });
+  const [naming, setNaming] = useState(null); // Analyze & name: auto on/off + counts
+  const [namingBusy, setNamingBusy] = useState(false);
   const load = useCallback(() => {
     api.get('/api/media')
       .then((r) => setMedia(r.data.media))
       .catch((e) => setError(e.response?.data?.error || e.message));
+    api.get('/api/media-naming').then((r) => setNaming(r.data))
+      .catch((e) => { if (e.response && e.response.status === 404) setNaming(false); });
     api.get('/api/prep')
       .then((r) => {
         const map = {};
@@ -122,6 +226,51 @@ export function MediaLibrary() {
   };
 
   useEffect(() => { load(); }, [load]);
+
+  // While anything is being analysed, refresh every 5 s so new names appear.
+  const namingActive = (media || []).some((m) => m.ai_status === 'queued' || m.ai_status === 'working');
+  useEffect(() => {
+    if (!namingActive) return undefined;
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [namingActive, load]);
+
+  const errText = (err) => err.response?.data?.error || err.message;
+  const namingActions = {
+    describe: async (id) => {
+      setError(null); setNotice(null);
+      try {
+        const r = await api.post(`/api/media/${id}/describe`);
+        setNotice(r.data.ai_status === 'done'
+          ? '#' + id + ' is named.'
+          : '#' + id + ' is being analysed - its new name appears here in a moment' +
+            (r.data.step === 'waiting-for-worker' ? ' (this one needs the video worker on your PC).' : '.'));
+        load();
+      } catch (err) { setError(errText(err)); }
+    },
+    describeAll: async () => {
+      setError(null); setNotice(null); setNamingBusy(true);
+      try {
+        const r = await api.post('/api/media/describe-all', { scope: 'unnamed' }, { timeout: 120000 });
+        setNotice(r.data.queued + (r.data.queued === 1 ? ' item is' : ' items are') +
+          ' being analysed and named - the new names appear as they are done.');
+        load();
+      } catch (err) { setError(errText(err)); }
+      setNamingBusy(false);
+    },
+    rename: async (id, title) => {
+      setError(null); setNotice(null);
+      try { await api.put(`/api/media/${id}/title`, { title }); load(); return true; } catch (err) { setError(errText(err)); return false; }
+    },
+    restore: async (id) => {
+      setError(null); setNotice(null);
+      try { await api.put(`/api/media/${id}/title`, { restore: true }); load(); } catch (err) { setError(errText(err)); }
+    },
+    setAuto: async (on) => {
+      setError(null);
+      try { await api.put('/api/media-naming', { auto: on }); load(); } catch (err) { setError(errText(err)); }
+    }
+  };
 
   const [dragOver, setDragOver] = useState(false);
   const [progress, setProgress] = useState(null); // {done, total, current}
@@ -159,7 +308,8 @@ export function MediaLibrary() {
       setError('Uploaded ' + done + ' of ' + files.length + '. Failed - ' + failures.join(' | '));
     } else {
       setNotice('Uploaded ' + done + (done === 1 ? ' file' : ' files') +
-        (skipped > 0 ? ' (' + skipped + ' skipped - not a photo, video or sound)' : ''));
+        (skipped > 0 ? ' (' + skipped + ' skipped - not a photo, video or sound)' : '') +
+        (naming && naming.auto ? '. They will be analysed and named automatically.' : ''));
     }
     load();
   };
@@ -237,6 +387,8 @@ export function MediaLibrary() {
         </div>
       </div>
 
+      <NamingCard status={naming} media={media} naming={namingActions} busy={namingBusy} />
+
       <div className="cp-card">
         <h3>Library</h3>
         <p className="cp-muted">
@@ -261,7 +413,7 @@ export function MediaLibrary() {
                       <span className="cp-muted">on PC</span>
                     )}
                   </td>
-                  <td>#{m.id} {m.title || '—'}</td>
+                  <td><NameCell m={m} naming={namingActions} ready={naming !== false} /></td>
                   <td><span className={`cp-pill ${m.kind === 'rendered' ? 'ok' : 'warn'}`}>{m.kind}</span></td>
                   <td className="cp-muted">{m.url_path ? 'server ' + (fmtSize(m.size_bytes) || '') : m.local_path}</td>
                   <td>
@@ -310,7 +462,8 @@ export function MediaLibrary() {
       </div>
 
       {media !== null && (
-        <SoundLibrary sounds={media.filter((m) => m.kind === 'sound')} preps={preps} onChanged={load} setError={setError} />
+        <SoundLibrary sounds={media.filter((m) => m.kind === 'sound')} preps={preps} onChanged={load} setError={setError}
+          naming={namingActions} namingReady={naming !== false} />
       )}
     </div>
   );

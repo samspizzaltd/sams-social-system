@@ -21,6 +21,8 @@ const scheduler = require('./services/scheduler');
 const metricsRoutes = require('./routes/metrics');
 const metrics = require('./services/metrics');
 const studioRoutes = require('./routes/studio');
+const mediaNamingRoutes = require('./routes/mediaNaming');
+const mediaNamer = require('./services/mediaNamer');
 const trendSounds = require('./services/trendSounds');
 const brandConfig = require('./services/brandConfig');
 
@@ -31,10 +33,12 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ||
   'https://sams-social-system.vercel.app,http://localhost:5173,http://localhost:4173'
 ).split(',').map(o => o.trim());
 app.use(cors({ origin: ALLOWED_ORIGINS }));
-// The render worker's analysis report carries video frames and has its own
-// larger limit on its route (routes/autopilot.js) - parsed AFTER the JWT check.
+// The render worker's reports carry pictures and have their own larger limit
+// on their routes (routes/autopilot.js, routes/mediaNaming.js) - parsed AFTER
+// the JWT check.
 const jsonBody = express.json();
-app.use((req, res, next) => (req.path === '/api/prep/analysis' ? next() : jsonBody(req, res, next)));
+const BIG_BODIES = new Set(['/api/prep/analysis', '/api/media/describe-input']);
+app.use((req, res, next) => (BIG_BODIES.has(req.path) ? next() : jsonBody(req, res, next)));
 // Platform fetchers (Facebook, Instagram) read robots.txt before pulling a
 // video by URL; a missing one answered with an HTML 404 got read as
 // "restricted" (2026-10-14). Media must stay fetchable; the API need not be.
@@ -62,6 +66,7 @@ app.use('/api', youtubeRoutes.apiRouter);
 app.use('/api', autopilotRoutes);
 app.use('/api', metricsRoutes); // real platform numbers (read-only)
 app.use('/api', studioRoutes); // Content Studio: Trending Sounds + Recommendations
+app.use('/api', mediaNamingRoutes); // Library: Analyze & name
 
 // Full system diagnostics (JWT-protected; public /health is deliberately slim)
 app.get('/api/system', (req, res) => {
@@ -197,6 +202,7 @@ const server = app.listen(port, '0.0.0.0', () => {
   autopilot.start();
   metrics.start(); // real Instagram + Facebook numbers, every 3 hours
   trendSounds.start(); // Instagram's trending sounds, every 6 hours (read-only)
+  mediaNamer.start(); // Library: names new uploads (when on) and moves namings along
 });
 
 server.on('error', (err) => {

@@ -221,6 +221,19 @@
 .cp-list li { margin-bottom: 7px; line-height: 1.45; }
 
 .cp-tags { display: flex; flex-wrap: wrap; gap: 7px; }
+
+/* Analyze & name (Library) */
+.cp-name-cell { min-width: 220px; max-width: 560px; }
+.cp-name-summary { font-size: 12.5px; line-height: 1.45; color: var(--cp-text, #333); margin-top: 3px; }
+.cp-name-tags { gap: 5px; margin-top: 5px; }
+.cp-name-tags .cp-tag { font-size: 11.5px; padding: 2px 8px; }
+.cp-name-old { font-size: 11.5px; color: var(--cp-muted); margin-top: 3px; word-break: break-word; }
+.cp-name-state { margin-top: 5px; font-size: 12px; }
+.cp-name-actions { margin-top: 6px; flex-wrap: wrap; gap: 6px; }
+.cp-name-edit { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.cp-name-edit input { flex: 1; min-width: 160px; }
+.cp-name-bar { flex-wrap: wrap; }
+.cp-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
 .cp-tag {
   background: #fdeee7; color: var(--cp-orange-dark);
   border-radius: 999px; padding: 4px 11px; font-size: 12.5px;

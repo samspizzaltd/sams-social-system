@@ -4,6 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const db = require('../database/db');
 const autopilot = require('../services/autopilot');
+const mediaNamer = require('../services/mediaNamer');
 
 const router = express.Router();
 
@@ -224,6 +225,7 @@ router.post('/render-jobs/:id/status', async (req, res) => {
   // Autopilot jobs move their video's preparation forward (or mark it failed).
   if (b.status === 'done' || b.status === 'failed') {
     await autopilot.onJobStatus(req.params.id, b.status, b.output_media_id, b.error);
+    await mediaNamer.onJobStatus(req.params.id, b.status, b.error); // Analyze & name (Describe jobs)
   }
   res.json({ ok: true });
 });

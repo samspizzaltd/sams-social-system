@@ -291,3 +291,20 @@ CREATE TABLE IF NOT EXISTS recommendations (
 ALTER TABLE trend_sounds ADD COLUMN source VARCHAR(12) NOT NULL DEFAULT 'trending';
 ALTER TABLE trend_sounds ADD COLUMN watch_terms VARCHAR(400) NULL;
 ALTER TABLE trend_sounds ADD COLUMN watch_seen_at DATETIME NULL;
+
+-- 2026-11-12: Analyze & name (Library, services/mediaNamer.js). The system
+-- looks at a library item and names it after what is in it. original_title
+-- keeps the name it had before (a harvested video is recognised by it, and the
+-- owner can restore it); title_source = ai | owner (NULL = never renamed);
+-- ai_status = queued | working | done | failed; ai_facts = JSON measurements
+-- (length, size, sound type...); ai_job_id = the worker's Describe job.
+ALTER TABLE media ADD COLUMN original_title VARCHAR(255) NULL;
+ALTER TABLE media ADD COLUMN title_source VARCHAR(8) NULL;
+ALTER TABLE media ADD COLUMN ai_summary VARCHAR(600) NULL;
+ALTER TABLE media ADD COLUMN ai_tags VARCHAR(400) NULL;
+ALTER TABLE media ADD COLUMN ai_facts TEXT NULL;
+ALTER TABLE media ADD COLUMN ai_status VARCHAR(12) NULL;
+ALTER TABLE media ADD COLUMN ai_error VARCHAR(300) NULL;
+ALTER TABLE media ADD COLUMN ai_job_id INT NULL;
+ALTER TABLE media ADD COLUMN ai_requested_at DATETIME NULL;
+ALTER TABLE media ADD COLUMN ai_named_at DATETIME NULL;
