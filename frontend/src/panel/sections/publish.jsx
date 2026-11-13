@@ -318,7 +318,7 @@ export function PublishQueue() {
     const id = row.id;
     setError(null);
     setGroupSheet(null);
-    setTkSheet({ id, loading: true, privacy_level: '', disable_comment: false, disable_duet: false, disable_stitch: false, when: row.prep_media_id ? 'slot' : 'now' });
+    setTkSheet({ id, loading: true, privacy_level: '', disable_comment: false, disable_duet: false, disable_stitch: false, brand_organic: true, when: row.prep_media_id ? 'slot' : 'now' });
     try {
       const r = await api.get('/api/tiktok/creator-info');
       setTkSheet((s) => (s && s.id === id ? { ...s, loading: false, creator: r.data.creator } : s));
@@ -360,7 +360,7 @@ export function PublishQueue() {
       media_id: g.media_id,
       ids: pending.map((q) => q.id),
       when: g.prep ? 'slot' : 'now',
-      tk: wantTk ? { loading: true, privacy_level: '', disable_comment: false, disable_duet: false, disable_stitch: false } : null,
+      tk: wantTk ? { loading: true, privacy_level: '', disable_comment: false, disable_duet: false, disable_stitch: false, brand_organic: true } : null,
       yt: yt ? {
         loading: true,
         privacy_status: '',
@@ -396,7 +396,8 @@ export function PublishQueue() {
           privacy_level: gs.tk.privacy_level,
           disable_comment: gs.tk.disable_comment,
           disable_duet: gs.tk.disable_duet,
-          disable_stitch: gs.tk.disable_stitch
+          disable_stitch: gs.tk.disable_stitch,
+          brand_organic: gs.tk.brand_organic !== false
         });
       }
       if (q.platform === 'youtube') Object.assign(body, { title: gs.yt.title, privacy_status: gs.yt.privacy_status });
@@ -620,7 +621,14 @@ export function PublishQueue() {
                 <p className="cp-muted" style={{ margin: '4px 0' }}>
                   TikTok posts as <strong>{gs.tk.creator.creator_nickname || gs.tk.creator.creator_username || 'the connected account'}</strong>
                   {gs.tk.creator.unaudited ? ' - only "Only me (private)" until TikTok approves our app review.' : ''}
+                  {gs.tk.creator.business ? ' - a public post through TikTok\'s business interface.' : ''}
                 </p>
+              )}
+              {gs.tk.creator && gs.tk.creator.business && (
+                <label className="cp-check">
+                  <input type="checkbox" checked={gs.tk.brand_organic !== false}
+                    onChange={(e) => setGroupSheet({ ...gs, tk: { ...gs.tk, brand_organic: e.target.checked } })} /> TikTok: label it as promotional content (your own business)
+                </label>
               )}
               <label className="cp-check">
                 <input type="checkbox" checked={gs.tk.disable_comment}
@@ -855,6 +863,11 @@ export function PublishQueue() {
                   {tkSheet.creator.creator_username ? ' (@' + tkSheet.creator.creator_username + ')' : ''}
                 </p>
               )}
+              {tkSheet.creator && tkSheet.creator.business && (
+                <p className="cp-muted" style={{ margin: '6px 0' }}>
+                  A public post through TikTok's business interface - it goes out by itself at its slot, with the caption.
+                </p>
+              )}
               {tkSheet.creator && tkSheet.creator.unaudited && (
                 <p className="cp-muted" style={{ margin: '6px 0' }}>
                   Until TikTok approves our app review, TikTok only accepts <strong>Only me (private)</strong> posts.
@@ -892,6 +905,12 @@ export function PublishQueue() {
                     disabled={!!(tkSheet.creator && tkSheet.creator.stitch_disabled)}
                     onChange={(e) => setTkSheet({ ...tkSheet, disable_stitch: e.target.checked })} /> Turn off Stitch
                 </label>
+                {tkSheet.creator && tkSheet.creator.business && (
+                  <label className="cp-check">
+                    <input type="checkbox" checked={tkSheet.brand_organic !== false}
+                      onChange={(e) => setTkSheet({ ...tkSheet, brand_organic: e.target.checked })} /> Label it as promotional content (your own business)
+                  </label>
+                )}
               </div>
             </>
           )}
@@ -906,6 +925,7 @@ export function PublishQueue() {
                 disable_comment: tkSheet.disable_comment,
                 disable_duet: tkSheet.disable_duet,
                 disable_stitch: tkSheet.disable_stitch,
+                brand_organic: tkSheet.brand_organic !== false,
                 when: tkSheet.when
               })} />
           </div>

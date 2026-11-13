@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../database/db');
 const tiktokPublish = require('../services/tiktokPublish');
+const tiktokBusiness = require('../services/tiktokBusiness');
 const youtubePublish = require('../services/youtubePublish');
 const autopilot = require('../services/autopilot');
 const publicRoute = require('../services/publicRoute');
@@ -94,6 +95,21 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
     // Drafts route: the owner sets who can watch, comments etc. himself in the
     // TikTok app when he posts the draft - nothing to choose here.
     postOptions = JSON.stringify({ route: 'drafts' });
+  } else if (row[0].platform === 'tiktok' && routes.tiktok === 'direct' && (await tiktokBusiness.ready())) {
+    // TikTok's business interface always posts publicly; the owner still
+    // confirms "Everyone" per post, plus the interactions and the label.
+    const b = req.body || {};
+    if (b.privacy_level !== 'PUBLIC_TO_EVERYONE') {
+      return res.status(400).json({ error: 'TikTok posts through the business connection are public - pick "Everyone (public)" to approve this one' });
+    }
+    postOptions = JSON.stringify({
+      route: 'business',
+      privacy_level: 'PUBLIC_TO_EVERYONE',
+      disable_comment: !!b.disable_comment,
+      disable_duet: !!b.disable_duet,
+      disable_stitch: !!b.disable_stitch,
+      brand_organic: b.brand_organic !== false
+    });
   } else if (row[0].platform === 'tiktok') {
     const b = req.body || {};
     if (!TIKTOK_PRIVACY.includes(b.privacy_level)) {

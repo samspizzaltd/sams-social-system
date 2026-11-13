@@ -227,6 +227,9 @@ async function sweepOrphanFiles() {
   const cutoff = Date.now() - 3600 * 1000;
   for (const name of names) {
     if (known.has(name)) continue;
+    // TikTok's URL-verification signature file (tiktokBusiness.js) is not
+    // media, and TikTok may check it again - never an orphan.
+    if (/\.txt$/i.test(name)) continue;
     try {
       const st = fs.statSync(path.join(MEDIA_DIR, name));
       if (st.isFile() && st.mtimeMs < cutoff) {

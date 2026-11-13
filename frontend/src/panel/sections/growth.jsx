@@ -14,6 +14,7 @@ const fmtDate = (d) => {
 function ConnectionsView() {
   const [meta, setMeta] = useState(null);
   const [tiktok, setTiktok] = useState(null);
+  const [tkBiz, setTkBiz] = useState(null); // TikTok business interface (2026-11-13)
   const [youtube, setYoutube] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -21,6 +22,7 @@ function ConnectionsView() {
   const load = useCallback(() => {
     api.get('/api/meta/status').then((r) => setMeta(r.data)).catch(() => setMeta({ unavailable: true }));
     api.get('/api/tiktok/status').then((r) => setTiktok(r.data)).catch(() => setTiktok({ unavailable: true }));
+    api.get('/api/tiktok-business/status').then((r) => setTkBiz(r.data)).catch(() => setTkBiz({ unavailable: true }));
     api.get('/api/youtube/status').then((r) => setYoutube(r.data)).catch(() => setYoutube({ unavailable: true }));
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -152,14 +154,103 @@ function ConnectionsView() {
         </tbody>
       </table>
       <button className="cp-btn small ghost" style={{ marginTop: 10 }} onClick={load}>Refresh</button>
-      <TikTokRouteCard connected={!!(tiktok && tiktok.connected)} />
+      <TikTokBusinessCard status={tkBiz} onChanged={load} />
+      <TikTokRouteCard connected={!!(tiktok && tiktok.connected)} business={!!(tkBiz && tkBiz.ready)} />
+    </div>
+  );
+}
+
+const API_ORIGIN = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+// TikTok through TikTok's business interface (backend services/tiktokBusiness.js):
+// approved TikTok posts go out publicly by themselves, with the caption.
+function TikTokBusinessCard({ status, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [link, setLink] = useState(null);
+  const run = async (fn) => {
+    setBusy(true); setError(null); setNotice(null);
+    try { await fn(); } catch (e) { setError(e.response?.data?.error || e.message); }
+    setBusy(false);
+    onChanged();
+  };
+  const connect = () => run(async () => {
+    const r = await api.get('/api/tiktok-business/connect-url');
+    const w = window.open(r.data.url, '_blank');
+    setLink(r.data.url);
+    setNotice(w
+      ? 'A TikTok window opened - log in with the SAM\u2019S TikTok account, allow the permissions, then come back and press Refresh.'
+      : 'Your browser blocked the popup - use the "Open TikTok login" link below instead.');
+  });
+  const verify = () => run(async () => {
+    await api.post('/api/tiktok-business/verify-url');
+    setNotice('TikTok confirmed the video address ✓');
+  });
+  const disconnect = () => run(async () => {
+    const r = await api.post('/api/tiktok-business/disconnect');
+    setNotice(r.data.note);
+  });
+  if (status === null) return <div className="cp-card" style={{ marginTop: 14 }}><Loading /></div>;
+  if (status.unavailable) {
+    return (
+      <div className="cp-card" style={{ marginTop: 14 }}>
+        <h3>TikTok - business interface</h3>
+        <p className="cp-muted">This arrives with the next server update.</p>
+      </div>
+    );
+  }
+  const steps = [
+    ['The TikTok app keys are saved on the server', status.configured && status.auth_url_set],
+    ['Sam\u2019s TikTok is connected' + (status.username ? ' (@' + status.username + ')' : ''), status.connected],
+    ['TikTok verified our video address', status.url_verified]
+  ];
+  return (
+    <div className="cp-card" style={{ marginTop: 14 }}>
+      <h3>TikTok - business interface</h3>
+      <ErrorBox error={error} />
+      {notice && <div className="cp-success">{notice}</div>}
+      <p className="cp-muted">
+        TikTok's business interface lets the system post your approved TikTok videos publicly by itself, with the caption -
+        like Instagram and Facebook. It needs a TikTok developer app that TikTok has approved (free); then these three steps.
+      </p>
+      <ul className="cp-list">
+        {steps.map(([t, ok]) => <li key={t}>{ok ? '✓' : '○'} {t}</li>)}
+      </ul>
+      {status.ready && (
+        <p><span className="cp-pill ok">TikTok posts go out publicly</span>
+          {status.followers !== null && status.followers !== undefined ? <span className="cp-muted"> · {fmt(status.followers)} followers</span> : null}</p>
+      )}
+      {status.connected && status.can_publish === false && (
+        <p className="cp-muted">The connection has no posting permission (video.publish) - check the app's "TikTok Accounts" permission, then connect again.</p>
+      )}
+      {!status.url_verified && status.url_error && <p className="cp-muted">Video address: {status.url_error}</p>}
+      {status.last_error && <p className="cp-muted">Last problem: {status.last_error}</p>}
+      {status.refresh_expires_at && (
+        <p className="cp-muted">The connection lasts until {fmtDate(status.refresh_expires_at)} - press Connect again before then.</p>
+      )}
+      <p className="cp-muted" style={{ fontSize: 12.5 }}>
+        For the TikTok app settings - redirect URL: <code>{status.redirect_uri}</code>
+      </p>
+      <div className="cp-content-actions" style={{ flexWrap: 'wrap' }}>
+        <a className="cp-btn small ghost" href={API_ORIGIN + '/auth/tiktok-business/secret-setup'} target="_blank" rel="noopener noreferrer">
+          {status.configured ? 'Change the app keys' : 'Set up the app keys'}
+        </a>
+        {status.connected
+          ? <ConfirmButton className="cp-btn small ghost" label="Disconnect" confirmLabel="Really disconnect TikTok (business)?" onConfirm={disconnect} />
+          : <button className="cp-btn small" disabled={busy || !status.configured || !status.auth_url_set} onClick={connect}>Connect TikTok (business)</button>}
+        <button className="cp-btn small ghost" disabled={busy || !status.configured} onClick={verify}>Verify video address</button>
+      </div>
+      {link && !status.connected && (
+        <div style={{ marginTop: 6 }}><a href={link} target="_blank" rel="noopener noreferrer" onClick={() => setLink(null)}>Open TikTok login</a></div>
+      )}
     </div>
   );
 }
 
 // How approved TikTok posts reach TikTok while TikTok has not audited the app
 // (backend services/publicRoute.js). Owner 2026-11-07: no paid third parties.
-function TikTokRouteCard({ connected }) {
+function TikTokRouteCard({ connected, business }) {
   const [route, setRoute] = useState(null);
   const [test, setTest] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -219,6 +310,10 @@ function TikTokRouteCard({ connected }) {
       <h3>TikTok posts</h3>
       <ErrorBox error={error} />
       {notice && <div className="cp-success">{notice}</div>}
+      {business && (
+        <p><span className="cp-pill ok">Public posting through TikTok's business interface is on</span>
+          <span className="cp-muted"> - approved TikTok posts go out by themselves at their slots. The setting below only matters if that connection stops.</span></p>
+      )}
       <p className="cp-muted">
         TikTok only lets an app post publicly by itself after TikTok audits it, and keeps that audit for apps made for the public.
         What TikTok allows any app: sending the finished video to your TikTok inbox. It does not go into your profile's Drafts folder - TikTok shows it under Inbox → System notifications; tap it and post it from the TikTok app
@@ -379,7 +474,7 @@ export function AnalyticsSection() {
           <table className="cp-table">
             <thead><tr><th>Platform</th><th>Followers</th><th>Posts read</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Shares</th><th>Saves</th></tr></thead>
             <tbody>
-              {['instagram', 'facebook_page'].map((k) => {
+              {['instagram', 'facebook_page', 'tiktok'].filter((k) => data.platforms[k] && !data.platforms[k].note).map((k) => {
                 const p = data.platforms[k];
                 return (
                   <tr key={k}>
@@ -389,7 +484,7 @@ export function AnalyticsSection() {
                   </tr>
                 );
               })}
-              {['tiktok', 'youtube'].map((k) => (
+              {['tiktok', 'youtube'].filter((k) => data.platforms[k] && data.platforms[k].note).map((k) => (
                 <tr key={k}><td>{PLATFORM_LABEL[k]}</td><td colSpan={8} className="cp-muted">{data.platforms[k].note}</td></tr>
               ))}
             </tbody>

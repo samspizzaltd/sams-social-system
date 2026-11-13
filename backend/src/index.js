@@ -14,6 +14,7 @@ const metaRoutes = require('./routes/meta');
 const publishQueueRoutes = require('./routes/publishQueue');
 const harvestRoutes = require('./routes/harvest');
 const tiktokRoutes = require('./routes/tiktok');
+const tiktokBusinessRoutes = require('./routes/tiktokBusiness');
 const youtubeRoutes = require('./routes/youtube');
 const autopilotRoutes = require('./routes/autopilot');
 const autopilot = require('./services/autopilot');
@@ -50,6 +51,7 @@ app.use('/auth', authRoutes);
 // uploading/deleting requires a JWT via the /api routes below.
 app.use('/', metaRoutes.publicRouter); // ONLY the OAuth entry points are public
 app.use('/', tiktokRoutes.publicRouter); // same rule: OAuth entry points only
+app.use('/', tiktokBusinessRoutes.publicRouter); // same rule (TikTok business interface)
 app.use('/', youtubeRoutes.publicRouter); // same rule
 app.use('/media', express.static(mediaRoutes.MEDIA_DIR, {
   maxAge: '7d',
@@ -62,6 +64,7 @@ app.use('/api', metaRoutes.apiRouter); // status, diag and reel endpoints - JWT 
 app.use('/api', publishQueueRoutes);
 app.use('/api', harvestRoutes);
 app.use('/api', tiktokRoutes.apiRouter);
+app.use('/api', tiktokBusinessRoutes.apiRouter);
 app.use('/api', youtubeRoutes.apiRouter);
 app.use('/api', autopilotRoutes);
 app.use('/api', metricsRoutes); // real platform numbers (read-only)

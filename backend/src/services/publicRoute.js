@@ -1,4 +1,5 @@
 const tiktokPublish = require('./tiktokPublish');
+const tiktokBusiness = require('./tiktokBusiness');
 const youtubePublish = require('./youtubePublish');
 const youtubeReturn = require('./youtubeReturn');
 const brandConfig = require('./brandConfig');
@@ -28,6 +29,9 @@ const brandConfig = require('./brandConfig');
 //  'wait'   - no public route yet: approved posts wait in the schedule
 //             (nothing refused, nothing burned) and go out once one exists.
 // TIKTOK_APP_AUDITED = true in .env switches TikTok to 'direct'.
+// Since 2026-11-13 TikTok is also 'direct' through TikTok's business interface
+// (services/tiktokBusiness.js) - once it is connected, the video address is
+// verified, and the posts approved under the old routes went back for review.
 
 const NAMES = { tiktok: 'TikTok', youtube: 'YouTube' };
 
@@ -37,7 +41,9 @@ async function routes() {
   return {
     instagram: 'direct',
     facebook_page: 'direct',
-    tiktok: tiktokPublish.appAudited() ? 'direct' : tiktokDrafts ? 'drafts' : 'wait',
+    tiktok: (await tiktokBusiness.ready()) && (await tiktokBusiness.returnedReady())
+      ? 'direct'
+      : tiktokPublish.appAudited() ? 'direct' : tiktokDrafts ? 'drafts' : 'wait',
     youtube: youtubePublish.appAudited() && (await youtubeReturn.ready()) ? 'direct' : 'wait'
   };
 }
@@ -52,7 +58,7 @@ async function waitingPlatforms(r) {
 function reason(platform, r) {
   if (!r || r[platform] !== 'wait') return null;
   if (platform === 'tiktok') {
-    return 'TikTok does not allow public posts from this system yet - the post waits (or send TikTok posts to your TikTok inbox: Settings → Platform Connections)';
+    return 'TikTok posts wait until TikTok\'s business interface is connected (Settings → Platform Connections) - or send them to your TikTok inbox there';
   }
   if (platform === 'youtube') {
     return 'YouTube uploads are switched off on the server for now - the post waits until they are switched on';

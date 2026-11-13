@@ -12,8 +12,10 @@
 //     video object returns (likes, comments). Reel views and reach come from
 //     video_insights, which needs the read_insights permission - when Meta
 //     refuses it, the run report says so instead of inventing a number.
-//   TikTok: our TikTok app has no statistics scopes, and posts go out through
-//     the owner's TikTok inbox, so we never learn the post id - not collected.
+//   TikTok: read through TikTok's business interface (tiktokBusiness.stats,
+//     2026-11-13) for posts it published - views, reach, likes, comments,
+//     shares, favorites, average watch time, followers. Posts that went through
+//     the owner's TikTok inbox have no post id and stay uncounted.
 //   YouTube: not collected yet. (Until 11 Nov 2026 this waited for Google's
 //     API compliance audit, which Google closed as not needed - see
 //     youtubePublish.appAudited. Adding it = videos.list with the readonly
@@ -24,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../database/db');
 const metaPublish = require('./metaPublish');
+const tiktokBusiness = require('./tiktokBusiness');
 
 const GRAPH = 'https://graph.facebook.com/v26.0';
 const REFRESH_EVERY_MS = 3 * 60 * 60 * 1000;
@@ -57,9 +60,9 @@ const FB_FIELD_SETS = [
   'likes.summary(true).limit(0)'
 ];
 const NOT_COLLECTED = {
-  tiktok: 'Our TikTok connection cannot read numbers (no statistics permission, and posts go through your TikTok inbox). See them in the TikTok app.',
   youtube: 'Not collected yet - YouTube numbers come in a later update. See them in YouTube Studio meanwhile.'
 };
+const COLLECTED = ['instagram', 'facebook_page', 'tiktok'];
 
 const state = { running: false, lastRun: null, lastManualAt: 0, timer: null, cleanup: null };
 
@@ -360,6 +363,44 @@ async function clearSimulatedNumbers() {
   return state.cleanup;
 }
 
+// ---------- TikTok (business interface) ----------
+
+async function collectTikTok(rows) {
+  const res = { connected: false, posts: rows.length, updated: 0, failed: 0, account: null, notes: [] };
+  if (!(await tiktokBusiness.ready())) {
+    res.notes.push('TikTok numbers come once TikTok\'s business interface is connected (Settings → Platform Connections)');
+    return res;
+  }
+  res.connected = true;
+  const r = await tiktokBusiness.stats(rows.map((x) => x.published_media_id));
+  if (r.followers !== null && r.followers !== undefined) {
+    res.account = { followers: r.followers };
+    await saveAccount('tiktok', { followers: r.followers, posts: null });
+  }
+  if (!r.ok) res.notes.push(scrub(r.error));
+  const posts = r.posts || {};
+  for (const row of rows) {
+    const v = posts[String(row.published_media_id)];
+    if (!v) {
+      res.failed++;
+      await savePost(row, blank(), 'TikTok has no numbers for this post yet (they come 24-48 h after posting)');
+      continue;
+    }
+    const out = blank();
+    out.views = num(v.video_views);
+    out.reach = num(v.reach);
+    out.likes = num(v.likes);
+    out.comments = num(v.comments);
+    out.shares = num(v.shares);
+    out.saves = num(v.favorites);
+    const avg = Number(v.average_time_watched);
+    out.avg_watch_ms = Number.isFinite(avg) && avg > 0 ? Math.round(avg * 1000) : null;
+    await savePost(row, out, null);
+    res.updated++;
+  }
+  return res;
+}
+
 // ---------- the refresh run ----------
 
 async function collect(trigger) {
@@ -373,13 +414,14 @@ async function collect(trigger) {
     const rows = await db.query(
       "SELECT id, platform, published_media_id FROM publish_queue WHERE status = 'published'" +
       " AND published_media_id IS NOT NULL AND published_media_id <> ''" +
-      " AND platform IN ('instagram', 'facebook_page') ORDER BY id DESC LIMIT " + MAX_POSTS
+      " AND platform IN ('instagram', 'facebook_page', 'tiktok') ORDER BY id DESC LIMIT " + MAX_POSTS
     );
     if (rows === null) {
       report.error = 'Database unavailable';
     } else {
       report.platforms.instagram = await collectInstagram(rows.filter((r) => r.platform === 'instagram'));
       report.platforms.facebook_page = await collectFacebook(rows.filter((r) => r.platform === 'facebook_page'));
+      report.platforms.tiktok = await collectTikTok(rows.filter((r) => r.platform === 'tiktok' && /^\d{5,30}$/.test(String(r.published_media_id))));
     }
   } catch (err) {
     report.error = scrub(err.message);
@@ -468,12 +510,12 @@ async function summary() {
     row.interactions = interactionsOf(row);
     row.error = p.error || null;
     row.fetched_at = p.fetched_at || null;
-    row.collected = p.platform === 'instagram' || p.platform === 'facebook_page';
+    row.collected = COLLECTED.includes(p.platform);
     return row;
   });
 
   const platforms = {};
-  for (const name of ['instagram', 'facebook_page']) {
+  for (const name of COLLECTED) {
     const mine = list.filter((p) => p.platform === name);
     const tracked = mine.filter((p) => p.fetched_at);
     const hist = (accounts || []).filter((a) => a.platform === name)
@@ -500,7 +542,7 @@ async function summary() {
   }
 
   const tracked = list.filter((p) => p.collected && p.fetched_at);
-  const followers = ['instagram', 'facebook_page'].map((n) => platforms[n].followers).filter((v) => v !== null);
+  const followers = COLLECTED.map((n) => platforms[n].followers).filter((v) => v !== null);
   const totals = {
     tracked: tracked.length,
     views: sumKnown(tracked, 'views'),

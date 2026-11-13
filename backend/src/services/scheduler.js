@@ -2,6 +2,7 @@ const db = require('../database/db');
 const brandConfig = require('./brandConfig');
 const metaPublish = require('./metaPublish');
 const tiktokPublish = require('./tiktokPublish');
+const tiktokBusiness = require('./tiktokBusiness');
 const youtubePublish = require('./youtubePublish');
 const autopilot = require('./autopilot');
 const publicRoute = require('./publicRoute');
@@ -194,8 +195,13 @@ async function processClaimedRow(row, routes) {
     // TikTok on the drafts route (publicRoute.js): the video goes to the
     // owner's TikTok drafts and he posts it from the TikTok app.
     const tiktokDrafts = row.platform === 'tiktok' && routes && routes.tiktok === 'drafts';
+    // TikTok's business interface (tiktokBusiness.js): public post, TikTok
+    // fetches the video from our server. The call itself is the commitment.
+    const tiktokBiz = row.platform === 'tiktok' && routes && routes.tiktok === 'direct' && (await tiktokBusiness.ready());
     const start = row.platform === 'instagram'
       ? await metaPublish.igCreateContainer(videoUrl, row.caption, postOptions)
+      : tiktokBiz
+        ? await tiktokBusiness.startPost(videoUrl, row.caption, postOptions)
       : tiktokDrafts
         ? await tiktokPublish.startDraft(row.filename,
             // Same rule as a direct post: the id is saved before any byte.
@@ -258,7 +264,9 @@ async function processClaimedRow(row, routes) {
   const result = row.platform === 'instagram'
     ? await metaPublish.igTryPublish(row.creation_id)
     : row.platform === 'tiktok'
-      ? await tiktokPublish.tryFinish(row.creation_id)
+      ? (tiktokBusiness.isBizId(row.creation_id)
+        ? await tiktokBusiness.tryFinish(row.creation_id)
+        : await tiktokPublish.tryFinish(row.creation_id))
       : row.platform === 'youtube'
         ? await youtubePublish.tryFinish(row.creation_id, row.filename)
         : await metaPublish.pageTryPublish(row.creation_id, row.caption);

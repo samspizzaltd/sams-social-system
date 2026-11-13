@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../database/db');
 const tiktokPublish = require('../services/tiktokPublish');
+const tiktokBusiness = require('../services/tiktokBusiness');
 
 // TikTok (Sams Social Studio app) OAuth and credential storage.
 //
@@ -120,6 +121,12 @@ apiRouter.get('/tiktok/status', async (req, res) => {
 // Creator info for the approve sheet (TikTok UX requirement: show nickname,
 // allowed privacy levels and interaction availability before posting).
 apiRouter.get('/tiktok/creator-info', async (req, res) => {
+  // Business connection ready: the sheet shows that account (public posts only).
+  if (await tiktokBusiness.ready()) {
+    const b = await tiktokBusiness.creatorInfo();
+    if (!b.ok) return res.status(503).json({ error: b.error });
+    return res.json({ creator: b.creator });
+  }
   const r = await tiktokPublish.creatorInfo();
   if (!r.ok) return res.status(503).json({ error: r.error });
   // Until TikTok audits the app it only accepts "Only me" posts, even though
