@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Privacy Policy</h1>
-<p class="meta">Sam's Social Studio — effective 11 November 2026 (replaces the version of 7 November 2026)</p>
+<p class="meta">Sam's Social Studio — effective 14 November 2026 (replaces the version of 11 November 2026)</p>
 
 <p>Sam's Social Studio ("the Service") is a social media management application
 operated by <strong>Sam's Pizza Ltd</strong> (შპს „სემის პიცა“, company ID 406255127,
@@ -52,8 +52,11 @@ platform's official authorization flow, the Service receives and stores:</p>
       which channel videos go to; and the OAuth access and refresh tokens Google issues
       for the permissions "upload videos" (youtube.upload) and "view your YouTube
       account" (youtube.readonly). The Service also records the ID and link of each
-      video it uploaded. It does not read the channel's other videos, comments,
-      subscribers, analytics, or any data about viewers.</li>
+      video it uploaded and, every 3 hours, reads the public statistics of those
+      videos (view, like and comment counts) and the channel's subscriber count, to
+      show the business owner in the control panel how the business's own videos
+      perform. It does not read the channel's other videos, the text of comments,
+      who the subscribers are, YouTube Analytics reports, or any data about viewers.</li>
   <li><strong>TikTok, Instagram, Facebook</strong>: the connected account's basic
       profile information (account ID, display name, avatar), the access token the
       platform issues, and metadata about the business's own posts (IDs, captions,
@@ -101,10 +104,12 @@ the Service's backend. Access to the Service requires authentication.</p>
 <h2>7. Retention and deletion</h2>
 <ul>
   <li><strong>YouTube:</strong> "Disconnect" in the control panel revokes the
-      Service's access at Google and deletes the stored tokens and channel data
-      immediately. If access is revoked from the Google Account instead, the Service
-      notices it within a day, deletes the tokens at once and the remaining channel
-      data within 7 days.</li>
+      Service's access at Google and deletes the stored tokens, channel data and
+      video statistics immediately. If access is revoked from the Google Account
+      instead, the Service notices it within a day, deletes the tokens at once and the
+      remaining channel data and statistics within 7 days. Video statistics and the
+      subscriber count are refreshed every 3 hours; any that could not be refreshed
+      for 30 days are deleted.</li>
   <li><strong>Other platforms:</strong> account data and tokens are kept only while
       the account stays connected. Disconnecting an account in the control panel, or
       revoking the app's access in the platform's own settings, invalidates the

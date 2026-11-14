@@ -447,7 +447,7 @@ export function AnalyticsSection() {
         const d = await load();
         if (d && d.running) { pollRef.current = setTimeout(tick, 4000); return; }
         setRefreshing(false);
-        setNotice('Updated from Instagram and Facebook.');
+        setNotice('Updated from the platforms.');
       };
       pollRef.current = setTimeout(tick, 3000);
     } catch (e) {
@@ -489,7 +489,7 @@ export function AnalyticsSection() {
           <table className="cp-table">
             <thead><tr><th>Platform</th><th>Followers</th><th>Posts read</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Shares</th><th>Saves</th></tr></thead>
             <tbody>
-              {['instagram', 'facebook_page', 'tiktok'].filter((k) => data.platforms[k] && !data.platforms[k].note).map((k) => {
+              {['instagram', 'facebook_page', 'tiktok', 'youtube'].filter((k) => data.platforms[k] && !data.platforms[k].note).map((k) => {
                 const p = data.platforms[k];
                 return (
                   <tr key={k}>
@@ -533,7 +533,7 @@ export function AnalyticsSection() {
             {chart.map((p) => (
               <div className="cp-bar-wrap" key={p.queue_id} title={PLATFORM_LABEL[p.platform] + ' · ' + fmtDate(p.published_at) + ' · ' + fmt(p.views) + ' views'}>
                 <div className="cp-bar" style={{ height: `${Math.max(4, Math.round((p.views / maxViews) * 120))}px` }} />
-                <div className="cp-bar-label">{p.platform === 'instagram' ? 'IG' : 'FB'} #{p.queue_id}</div>
+                <div className="cp-bar-label">{({ instagram: 'IG', facebook_page: 'FB', tiktok: 'TT', youtube: 'YT' })[p.platform] || p.platform} #{p.queue_id}</div>
               </div>
             ))}
           </div>

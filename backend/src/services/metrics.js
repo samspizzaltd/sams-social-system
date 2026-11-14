@@ -16,10 +16,12 @@
 //     2026-11-13) for posts it published - views, reach, likes, comments,
 //     shares, favorites, average watch time, followers. Posts that went through
 //     the owner's TikTok inbox have no post id and stay uncounted.
-//   YouTube: not collected yet. (Until 11 Nov 2026 this waited for Google's
-//     API compliance audit, which Google closed as not needed - see
-//     youtubePublish.appAudited. Adding it = videos.list with the readonly
-//     scope we already hold, plus a line in the privacy policy.)
+//   YouTube (youtube.readonly, 2026-11-14): subscribers, and per video views,
+//     likes and comments (youtubePublish.stats). Reach, shares, saves and watch
+//     time live only in YouTube Analytics, which needs another permission, so
+//     they stay NULL. Google's data rules: numbers not refreshed for ~30 days,
+//     and all of them after a disconnect, are deleted (youtubePublish.dailyCheck
+//     / revokeAndDelete); the privacy policy says so.
 // NULL in the tables means "the platform did not give us this number", never 0.
 
 const fs = require('fs');
@@ -27,6 +29,7 @@ const path = require('path');
 const db = require('../database/db');
 const metaPublish = require('./metaPublish');
 const tiktokBusiness = require('./tiktokBusiness');
+const youtubePublish = require('./youtubePublish');
 
 const GRAPH = 'https://graph.facebook.com/v26.0';
 const REFRESH_EVERY_MS = 3 * 60 * 60 * 1000;
@@ -59,10 +62,9 @@ const FB_FIELD_SETS = [
   'likes.summary(true).limit(0),comments.summary(true).limit(0)',
   'likes.summary(true).limit(0)'
 ];
-const NOT_COLLECTED = {
-  youtube: 'Not collected yet - YouTube numbers come in a later update. See them in YouTube Studio meanwhile.'
-};
-const COLLECTED = ['instagram', 'facebook_page', 'tiktok'];
+// A platform listed here shows its note instead of numbers (none right now).
+const NOT_COLLECTED = {};
+const COLLECTED = ['instagram', 'facebook_page', 'tiktok', 'youtube'];
 
 const state = { running: false, lastRun: null, lastManualAt: 0, timer: null, cleanup: null };
 
@@ -401,6 +403,41 @@ async function collectTikTok(rows) {
   return res;
 }
 
+// ---------- YouTube ----------
+
+async function collectYouTube(rows) {
+  const res = { connected: false, posts: rows.length, updated: 0, failed: 0, account: null, notes: [] };
+  if (!(await youtubePublish.account())) {
+    res.notes.push('YouTube is not connected (Settings → Platform Connections)');
+    return res;
+  }
+  res.connected = true;
+  const r = await youtubePublish.stats(rows.map((x) => x.published_media_id));
+  if (r.followers !== null && r.followers !== undefined) {
+    res.account = { followers: r.followers };
+    await saveAccount('youtube', { followers: r.followers, posts: null });
+  }
+  if (r.error) res.notes.push(scrub(r.error));
+  const posts = r.posts || {};
+  for (const row of rows) {
+    const s = posts[String(row.published_media_id)];
+    if (!s) {
+      res.failed++;
+      await savePost(row, blank(), r.ok
+        ? 'YouTube returned no numbers for this video (deleted, or still processing)'
+        : 'YouTube could not be read this time' + (r.error ? ' - ' + scrub(r.error) : ''));
+      continue;
+    }
+    const out = blank();
+    out.views = num(s.viewCount);
+    out.likes = num(s.likeCount); // absent when the channel hides likes
+    out.comments = num(s.commentCount); // absent when comments are off
+    await savePost(row, out, null);
+    res.updated++;
+  }
+  return res;
+}
+
 // ---------- the refresh run ----------
 
 async function collect(trigger) {
@@ -414,7 +451,7 @@ async function collect(trigger) {
     const rows = await db.query(
       "SELECT id, platform, published_media_id FROM publish_queue WHERE status = 'published'" +
       " AND published_media_id IS NOT NULL AND published_media_id <> ''" +
-      " AND platform IN ('instagram', 'facebook_page', 'tiktok') ORDER BY id DESC LIMIT " + MAX_POSTS
+      " AND platform IN ('instagram', 'facebook_page', 'tiktok', 'youtube') ORDER BY id DESC LIMIT " + MAX_POSTS
     );
     if (rows === null) {
       report.error = 'Database unavailable';
@@ -422,6 +459,7 @@ async function collect(trigger) {
       report.platforms.instagram = await collectInstagram(rows.filter((r) => r.platform === 'instagram'));
       report.platforms.facebook_page = await collectFacebook(rows.filter((r) => r.platform === 'facebook_page'));
       report.platforms.tiktok = await collectTikTok(rows.filter((r) => r.platform === 'tiktok' && /^\d{5,30}$/.test(String(r.published_media_id))));
+      report.platforms.youtube = await collectYouTube(rows.filter((r) => r.platform === 'youtube'));
     }
   } catch (err) {
     report.error = scrub(err.message);

@@ -135,6 +135,13 @@ async function dailyCheck() {
     await db.query(
       "DELETE FROM accounts WHERE platform = 'youtube' AND status IN ('expired','disconnected') AND updated_at < (NOW() - INTERVAL 6 DAY)"
     );
+    // YouTube numbers (views, likes, comments, subscribers - see stats()) are
+    // refreshed every 3 hours; any that could not be refreshed for ~30 days
+    // are deleted, and all of them go once no YouTube channel is connected.
+    await db.query("DELETE FROM post_metrics WHERE platform = 'youtube' AND fetched_at < (NOW() - INTERVAL 29 DAY)");
+    await db.query("DELETE FROM account_metrics WHERE platform = 'youtube' AND fetched_at < (NOW() - INTERVAL 29 DAY)");
+    const left = await db.query("SELECT COUNT(*) AS n FROM accounts WHERE platform = 'youtube'");
+    if (left && left.length && Number(left[0].n) === 0) await deleteStoredNumbers();
   } catch (err) {
     console.warn('[youtube] daily check failed: ' + err.message);
   }
@@ -163,7 +170,14 @@ async function revokeAndDelete() {
   }
   const del = await db.query("DELETE FROM accounts WHERE platform = 'youtube'");
   if (del === null) return { ok: false, error: 'Database unavailable' };
+  await deleteStoredNumbers();
   return { ok: true, revoked, deleted: del.affectedRows };
+}
+
+// The YouTube statistics the Analytics page stored (metrics.js).
+async function deleteStoredNumbers() {
+  await db.query("DELETE FROM post_metrics WHERE platform = 'youtube'");
+  await db.query("DELETE FROM account_metrics WHERE platform = 'youtube'");
 }
 
 // The connected channel, shown in the panel and the approve sheet so a post
@@ -191,6 +205,42 @@ async function channelInfo() {
   } catch (err) {
     return { ok: false, error: err.message };
   }
+}
+
+// Numbers for the Analytics page, read with the youtube.readonly permission the
+// owner already granted: views, likes and comments of the videos the Service
+// uploaded (videos.list, part=statistics - 1 quota unit per 50 videos) and the
+// channel's subscriber count (channels.list, part=statistics). Read-only.
+// Returns { ok, posts: { videoId: statistics }, followers, error } and never throws.
+async function stats(videoIds) {
+  const out = { ok: true, posts: {}, followers: null, error: null };
+  const acc = await account();
+  if (!acc) return { ...out, ok: false, error: 'YouTube not connected' };
+  const headers = { Authorization: 'Bearer ' + acc.access_token };
+  const read = async (url) => {
+    const r = await fetch(url, { headers, signal: AbortSignal.timeout(20 * 1000) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) throw new Error((j.error && j.error.message) || 'HTTP ' + r.status);
+    return j;
+  };
+  try {
+    const j = await read(API + '/channels?part=statistics&mine=true');
+    const s = j.items && j.items[0] && j.items[0].statistics;
+    if (s && !s.hiddenSubscriberCount && s.subscriberCount !== undefined) out.followers = Number(s.subscriberCount);
+  } catch (err) {
+    out.error = 'channel statistics: ' + err.message;
+  }
+  const ids = [...new Set((videoIds || []).map(String).filter((id) => /^[A-Za-z0-9_-]{11}$/.test(id)))];
+  for (let i = 0; i < ids.length; i += 50) {
+    try {
+      const j = await read(API + '/videos?part=statistics&id=' + ids.slice(i, i + 50).join(','));
+      for (const it of j.items || []) out.posts[it.id] = it.statistics || {};
+    } catch (err) {
+      out.ok = false;
+      out.error = 'video statistics: ' + err.message;
+    }
+  }
+  return out;
 }
 
 const PRIVACY = ['private', 'unlisted', 'public'];
@@ -376,6 +426,6 @@ async function tryFinish(sessionUrl, filename) {
 }
 
 module.exports = {
-  account, appAudited, channelInfo, startPost, tryFinish, dailyCheck, revokeAndDelete, PRIVACY,
+  account, appAudited, channelInfo, stats, startPost, tryFinish, dailyCheck, revokeAndDelete, PRIVACY,
   _resetDailyCheck: () => { lastDailyCheck = 0; } // tests only
 };
