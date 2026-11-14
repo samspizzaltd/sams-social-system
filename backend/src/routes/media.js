@@ -51,7 +51,9 @@ router.get('/media', async (req, res) => {
   const kind = req.query.kind || 'all';
   let rows;
   if (kind === 'all' || !KINDS.includes(kind)) {
-    rows = await db.query('SELECT * FROM media ORDER BY created_at DESC LIMIT 1000');
+    // A 'montage' row is the autopilot's plan of a montage, not a file - its
+    // finished edit is in the library as a rendered video.
+    rows = await db.query("SELECT * FROM media WHERE kind <> 'montage' ORDER BY created_at DESC LIMIT 1000");
   } else {
     rows = await db.query('SELECT * FROM media WHERE kind = ? ORDER BY created_at DESC LIMIT 300', [kind]);
   }

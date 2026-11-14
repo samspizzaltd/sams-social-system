@@ -57,16 +57,70 @@ function Picture({ video, segments, holdFrames, style, muted, volume }) {
   );
 }
 
+// Montage (2026-11-14): one part = the best moment of ONE of the owner's short
+// clips. A vertical clip fills the frame, any other shape sits on a blurred
+// copy of itself; every part pushes in slowly (z0 -> z1) for energy. The parts
+// follow each other as hard cuts - their lengths are whole beats of the music.
+function Part({ part, frames, muted, z0 = 1, z1 = 1.08 }) {
+  const frame = useCurrentFrame(); // counts from the start of this part
+  const { fps } = useVideoConfig();
+  const zoom = interpolate(frame, [0, Math.max(1, frames)], [z0, z1], clamp);
+  const start = Math.round(part.from * fps);
+  return (
+    <AbsoluteFill style={{ overflow: 'hidden' }}>
+      {part.fit === 'contain' && (
+        <OffthreadVideo src={staticFile(part.video)} trimBefore={start} muted
+          style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'blur(42px) brightness(0.55)', transform: 'scale(1.25)' }} />
+      )}
+      <AbsoluteFill style={{ transform: `scale(${zoom})` }}>
+        <OffthreadVideo src={staticFile(part.video)} trimBefore={start} muted={muted} volume={muted ? 0 : 1}
+          style={{ width: '100%', height: '100%', objectFit: part.fit === 'contain' ? 'contain' : 'cover' }} />
+      </AbsoluteFill>
+    </AbsoluteFill>
+  );
+}
+
+function MontagePicture({ parts, holdFrames, muted }) {
+  const { fps } = useVideoConfig();
+  const last = parts[parts.length - 1];
+  const lastLen = Math.max(1, Math.round((last.to - last.from) * fps));
+  return (
+    <Series>
+      {parts.map((p, i) => {
+        const len = Math.max(1, Math.round((p.to - p.from) * fps));
+        return (
+          <Series.Sequence key={i} durationInFrames={len}>
+            <Part part={p} frames={len} muted={muted} />
+          </Series.Sequence>
+        );
+      })}
+      {holdFrames > 0 && (
+        // the last part's final frame, held still at its final zoom (see Picture)
+        <Series.Sequence durationInFrames={holdFrames}>
+          <Freeze frame={0}>
+            <Part part={{ ...last, from: last.from + (lastLen - 1) / fps }} frames={1} muted z0={1.08} z1={1.08} />
+          </Freeze>
+        </Series.Sequence>
+      )}
+    </Series>
+  );
+}
+
 export const MagicCut = ({ video, sound, hook, endLine, fit, segments, hold, hookStart, hookEnd: hookEndAt, endStart: endStartAt }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
 
-  const segs = Array.isArray(segments)
+  // A montage: every part names its own clip (and fit).
+  const montageParts = Array.isArray(segments) && segments.length > 1 && segments.every((s) => s && s.video)
+    ? segments.filter((s) => Number(s.to) - Number(s.from) > 0 && Number(s.from) >= 0)
+      .map((s) => ({ video: String(s.video), from: Number(s.from), to: Number(s.to), fit: s.fit === 'contain' ? 'contain' : 'cover' }))
+    : null;
+  const segs = !montageParts && Array.isArray(segments)
     ? segments.filter((s) => s && Number(s.to) - Number(s.from) > 0 && Number(s.from) >= 0)
       .map((s) => ({ from: Number(s.from), to: Number(s.to) }))
     : [];
   const plan = segs.length ? segs : null;
-  const holdFrames = plan ? Math.max(0, Math.round((Number(hold) || 0) * fps)) : 0;
+  const holdFrames = plan || montageParts ? Math.max(0, Math.round((Number(hold) || 0) * fps)) : 0;
   const num = (v) => (v === undefined || v === null || v === '' ? NaN : Number(v));
 
   const hookFrom = Number.isFinite(num(hookStart)) ? within(Math.round(num(hookStart) * fps), 0, Math.floor(durationInFrames * 0.4)) : 0;
@@ -89,23 +143,29 @@ export const MagicCut = ({ video, sound, hook, endLine, fit, segments, hold, hoo
 
   return (
     <AbsoluteFill style={{ backgroundColor: BRAND.dark, fontFamily: BRAND.font }}>
-      {fit === 'contain' && (
-        <AbsoluteFill>
-          <Picture video={video} segments={plan} holdFrames={holdFrames} muted
-            style={{
-              width: '100%', height: '100%', objectFit: 'cover',
-              filter: 'blur(42px) brightness(0.55)', transform: 'scale(1.25)'
-            }}
-          />
-        </AbsoluteFill>
+      {montageParts ? (
+        <MontagePicture parts={montageParts} holdFrames={holdFrames} muted={!!sound} />
+      ) : (
+        <>
+          {fit === 'contain' && (
+            <AbsoluteFill>
+              <Picture video={video} segments={plan} holdFrames={holdFrames} muted
+                style={{
+                  width: '100%', height: '100%', objectFit: 'cover',
+                  filter: 'blur(42px) brightness(0.55)', transform: 'scale(1.25)'
+                }}
+              />
+            </AbsoluteFill>
+          )}
+          <AbsoluteFill>
+            <Picture video={video} segments={plan} holdFrames={holdFrames}
+              muted={!!sound}
+              volume={sound ? 0 : fadeTail}
+              style={{ width: '100%', height: '100%', objectFit: fit === 'contain' ? 'contain' : 'cover' }}
+            />
+          </AbsoluteFill>
+        </>
       )}
-      <AbsoluteFill>
-        <Picture video={video} segments={plan} holdFrames={holdFrames}
-          muted={!!sound}
-          volume={sound ? 0 : fadeTail}
-          style={{ width: '100%', height: '100%', objectFit: fit === 'contain' ? 'contain' : 'cover' }}
-        />
-      </AbsoluteFill>
       {sound ? <Audio src={staticFile(sound)} loop volume={soundVolume} /> : null}
 
       {/* legibility gradients, only while text is on screen */}

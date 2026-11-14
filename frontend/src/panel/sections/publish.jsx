@@ -60,8 +60,21 @@ function MagicNote({ prep, busy, onRemake, onUsePair }) {
           {copy.ig_audio.artist ? ' - ' + copy.ig_audio.artist : ''} (Instagram adds it when it posts)
         </div>
       )}
-      {copy.sound_reason && <div><strong>Why these sounds:</strong> {copy.sound_reason}</div>}
-      {copy.edit_plan && (
+      {copy.sound_reason && <div><strong>{copy.montage ? 'Why these clips and this music:' : 'Why these sounds:'}</strong> {copy.sound_reason}</div>}
+      {copy.montage && (
+        <div>
+          <strong>🎬 Montage of {(copy.montage.clips || []).length} clips:</strong>{' '}
+          {(copy.montage.clips || []).map((c, i) => (i ? ' → ' : '') + (c.title || 'clip #' + c.id) + ' (' + sec(c.from) + '-' + sec(c.to) + ')').join('')}
+          <div className="cp-muted">
+            {copy.montage.music
+              ? 'Cut to "' + copy.montage.music.title + '"' + (copy.montage.beat ? ' on the beat (a cut every ' + sec(copy.montage.beat) + ' or a multiple of it)' : '')
+              : 'The clips keep their own sound (no music in the library was long enough)'}
+            {copy.edit_plan ? ' · ' + sec(copy.edit_plan.duration) + ' in total' : ''}
+          </div>
+          {copy.edit_plan && copy.edit_plan.note ? <div className="cp-muted">{copy.edit_plan.note}</div> : null}
+        </div>
+      )}
+      {copy.edit_plan && !copy.montage && (
         <div>
           <strong>Edit plan:</strong> {planText(copy.edit_plan)}
           {copy.edit_plan.note ? <div className="cp-muted">{copy.edit_plan.note}</div> : null}
@@ -86,7 +99,14 @@ function MagicNote({ prep, busy, onRemake, onUsePair }) {
       {prep.sound_choice === 'rotated' && prep.sound_url && (
         <audio controls preload="none" src={API_BASE + prep.sound_url} style={{ height: 30, marginTop: 6, maxWidth: '100%' }} />
       )}
-      {prep.status === 'staged' && (
+      {prep.status === 'staged' && copy.montage && (
+        <div className="cp-content-actions" style={{ marginTop: 6 }}>
+          <ConfirmButton className="cp-btn small ghost" disabled={!!busy}
+            label="Make another montage" confirmLabel="Drop this one and make a new one from the clips?"
+            onConfirm={() => onRemake(prep.media_id, 'rotate')} />
+        </div>
+      )}
+      {prep.status === 'staged' && !copy.montage && (
         <div className="cp-content-actions" style={{ marginTop: 6 }}>
           <ConfirmButton className="cp-btn small ghost" disabled={!!busy}
             label={prep.sound_choice === 'rotated' ? 'Remake with its own sound' : 'Remake with a circulated sound'}

@@ -169,6 +169,7 @@ async function stageAssets(job, stagingDir) {
   const jobsRel = 'jobs/' + job.id;
   const staged = [];
   staged.kinds = []; // parallel to staged: the library kind of each file
+  staged.ids = []; // parallel to staged: the library id of each file (montages)
   let index = 0;
   for (const m of job.media || []) {
     index++;
@@ -188,6 +189,7 @@ async function stageAssets(job, stagingDir) {
       fs.copyFileSync(lp, path.join(stagingDir, name));
       staged.push(jobsRel + '/' + name);
       staged.kinds.push(String(m.kind || ''));
+      staged.ids.push(Number(m.id));
     } else if (m.url_path) {
       const base = path.basename(String(m.url_path));
       if (!MEDIA_EXT.test(base)) {
@@ -199,6 +201,7 @@ async function stageAssets(job, stagingDir) {
       fs.writeFileSync(path.join(stagingDir, name), Buffer.from(await r.arrayBuffer()));
       staged.push(jobsRel + '/' + name);
       staged.kinds.push(String(m.kind || ''));
+      staged.ids.push(Number(m.id));
     }
   }
   return staged;
@@ -237,6 +240,39 @@ function buildProps(job, stagedFiles) {
         { at: '0:20', type: 'cta', text: 'Come and get yours' }
       ]
     );
+  } else if (job.template === 'MagicCut' && params.montage && Array.isArray(params.clips)) {
+    // A montage (2026-11-14): the best moment of each of several short clips,
+    // in the planner's order, cut to the chosen music.
+    const at = new Map((stagedFiles.ids || []).map((id, i) => [id, i]));
+    const parts = params.clips.slice(0, 12).map((c) => {
+      const i = at.get(Number(c && c.media_id));
+      const from = Number(c && c.from);
+      const to = Number(c && c.to);
+      if (i === undefined || !isVideoFile(stagedFiles[i]) || stagedFiles.kinds[i] === 'sound') return null;
+      if (!(Number.isFinite(from) && Number.isFinite(to) && from >= 0 && to - from >= 0.3 && to - from <= 10)) return null;
+      const w = Number(c.width) || 0;
+      const h = Number(c.height) || 0;
+      const r = w && h ? w / h : 0.5625;
+      return { video: stagedFiles[i], from, to, fit: r > 0.5 && r < 0.65 ? 'cover' : 'contain' };
+    }).filter(Boolean);
+    if (parts.length < 2) throw new Error('MagicCut montage: fewer than 2 of its clips could be staged');
+    let sound = null;
+    if (params.sound === 'rotated') {
+      sound = stagedFiles.find((f, i) => isSoundFile(f) && stagedFiles.kinds[i] === 'sound') || stagedFiles.find((f) => isSoundFile(f)) || null;
+      if (!sound) throw new Error('MagicCut montage: the music could not be staged');
+    }
+    props.video = parts[0].video;
+    props.segments = parts;
+    props.sound = sound;
+    props.fit = 'cover';
+    props.hook = String(params.hook || '').slice(0, 60);
+    props.endLine = String(params.end_line || '').slice(0, 48);
+    props.hold = Math.min(3, Math.max(0, Number(params.hold) || 0));
+    const frames = parts.reduce((n, s) => n + Math.max(1, Math.round((s.to - s.from) * FPS)), 0) + Math.round(props.hold * FPS);
+    props.durationInFrames = Math.min(FPS * 60, Math.max(FPS * 3, frames));
+    if (Number.isFinite(Number(params.hook_start)) && params.hook_start !== null) props.hookStart = Number(params.hook_start);
+    if (Number.isFinite(Number(params.hook_end)) && params.hook_end !== null) props.hookEnd = Number(params.hook_end);
+    if (Number.isFinite(Number(params.end_start)) && params.end_start !== null) props.endStart = Number(params.end_start);
   } else if (job.template === 'MagicCut') {
     const videoAt = stagedFiles.findIndex((f, i) => isVideoFile(f) && stagedFiles.kinds[i] !== 'sound');
     if (videoAt < 0) throw new Error('MagicCut: the library video could not be staged');

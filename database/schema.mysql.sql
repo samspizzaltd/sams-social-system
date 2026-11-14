@@ -308,3 +308,9 @@ ALTER TABLE media ADD COLUMN ai_error VARCHAR(300) NULL;
 ALTER TABLE media ADD COLUMN ai_job_id INT NULL;
 ALTER TABLE media ADD COLUMN ai_requested_at DATETIME NULL;
 ALTER TABLE media ADD COLUMN ai_named_at DATETIME NULL;
+
+-- 2026-11-14: montages (services/montage.js) - the owner's short clips put
+-- together. A clip's prep points at the montage it went into (status
+-- in_montage); the montage itself is a media row of kind 'montage' with its
+-- own prep, rendered by MagicCut and reviewed like any prepared video.
+ALTER TABLE media_prep ADD COLUMN montage_id INT NULL;

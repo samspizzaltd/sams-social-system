@@ -24,7 +24,10 @@ const PREP_LABEL = {
   rendering: ['warn', 'making the branded edit'],
   staged: ['ok', 'ready - in the Publish Queue'],
   failed: ['err', 'could not be prepared'],
-  skipped: ['err', 'skipped - will not be posted']
+  skipped: ['err', 'skipped - will not be posted'],
+  in_montage: ['ok', 'in a montage'],
+  // a short clip (autopilot montages, 2026-11-14) waiting for the next montage
+  clip: ['warn', 'a short clip - waiting for a montage']
 };
 
 // "Analyze & name" (owner 2026-11-12): the system looks at an item and names
@@ -422,7 +425,7 @@ export function MediaLibrary() {
                       const posted = !p && (leftAlone.posted || []).includes(Number(m.id));
                       const dropped = !p && (leftAlone.dropped || []).includes(Number(m.id));
                       const byHand = posted || dropped;
-                      const [pill, text] = p ? (PREP_LABEL[p.status] || ['warn', p.status])
+                      const [pill, text] = p ? (PREP_LABEL[p.status === 'analyzed' && p.clip ? 'clip' : p.status] || ['warn', p.status])
                         : posted ? ['ok', 'already posted - left alone']
                           : dropped ? ['err', 'dropped from the queue - left alone']
                             : ['warn', 'new - will be prepared'];

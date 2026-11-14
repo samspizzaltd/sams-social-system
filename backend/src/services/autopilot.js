@@ -6,6 +6,7 @@ const claude = require('./claudeClient');
 const publicRoute = require('./publicRoute');
 const trendSounds = require('./trendSounds');
 const recommendations = require('./recommendations');
+const montage = require('./montage');
 
 // Autopilot (owner request 2026-11-06): "I have provided you with many videos
 // that are ready for publishing - add your magic when publishing them, and
@@ -48,34 +49,12 @@ const MIN_CLIP_SECONDS = 1; // shorter than this is no use even inside a montage
 const STUCK_WRITING_MS = 10 * 60 * 1000;
 const ANALYZE_BLOCKS_WRITING_MS = 30 * 60 * 1000;
 
-// Montages (owner 2026-11-14): "when adding small video clips I expect the
-// system to put them together to create a video that is viral, choose good
-// sound and then recommend - not choose one video to publish and that's it."
-// So while montages are on (default; branding montage_enabled = 'false' turns
-// them off), a short upload of the owner's (not a harvested repost) is montage
-// material: it is never written up and posted alone, and its own few seconds
-// of audio (mostly kitchen noise) stay out of the sound circulation.
-function montageOn(cfg) {
-  return String((cfg && cfg.montage_enabled) || 'true').trim().toLowerCase() !== 'false';
-}
-function clipMaxSeconds(cfg) {
-  const n = Number(cfg && cfg.montage_clip_max_seconds);
-  return Number.isFinite(n) && n >= 3 && n <= 60 ? n : 20;
-}
-function analysedSeconds(analysis) {
-  try {
-    const a = typeof analysis === 'string' ? JSON.parse(analysis || '{}') : (analysis || {});
-    const d = Number(a.duration);
-    return Number.isFinite(d) ? d : null;
-  } catch {
-    return null;
-  }
-}
-// kind/note of the library video + its measured length -> montage material?
-function isClip(kind, note, seconds, cfg) {
-  return montageOn(cfg) && kind === 'video' && !/^harvest:/.test(String(note || '')) &&
-    seconds !== null && seconds <= clipMaxSeconds(cfg);
-}
+// Montages (owner 2026-11-14, services/montage.js): while montages are on
+// (default; branding montage_enabled = 'false' turns them off), a short upload
+// of the owner's (not a harvested repost) is montage material: it is never
+// written up and posted alone, and its own few seconds of audio (mostly
+// kitchen noise) stay out of the sound circulation.
+const { montageOn, analysedSeconds, isClip } = montage;
 
 const state = {
   loopTicks: 0,
@@ -696,6 +675,7 @@ async function writeNext() {
     " WHERE p.status = 'analyzed' ORDER BY p.media_id ASC LIMIT 300"
   );
   const prep = (next || []).find((p) => {
+    if (p.m_kind === 'montage') return false; // montages are planned by montage.js
     const s = analysedSeconds(p.analysis);
     // under 3 s = only ever montage material (kept for when montages are on)
     return !isClip(p.m_kind, p.m_note, s, cfg) && (s === null || s >= MIN_SECONDS);
@@ -865,6 +845,14 @@ async function onJobStatus(jobId, status, outputMediaId, error) {
         "UPDATE media_prep SET status = 'failed', error = ? WHERE analyze_job_id = ? AND status = 'analyzing'",
         ['Analysis failed on the PC: ' + String(error || 'unknown error').slice(0, 900), jobId]
       );
+      const m = await db.query(
+        "SELECT p.media_id FROM media_prep p JOIN media m ON m.id = p.media_id WHERE p.render_job_id = ? AND p.status = 'rendering' AND m.kind = 'montage'",
+        [jobId]
+      );
+      if (m && m.length) {
+        await montage.onRenderFailed(m[0].media_id, error);
+        return;
+      }
       await db.query(
         "UPDATE media_prep SET status = 'failed', error = ? WHERE render_job_id = ? AND status = 'rendering'",
         ['Edit failed on the PC: ' + String(error || 'unknown error').slice(0, 900), jobId]
@@ -905,6 +893,14 @@ async function onJobStatus(jobId, status, outputMediaId, error) {
 async function prepareAgain(mediaId, sound) {
   const rows = await db.query('SELECT * FROM media_prep WHERE media_id = ?', [mediaId]);
   if (rows === null) return { status: 503, error: 'Database unavailable' };
+  if (await montage.isMontage(mediaId)) {
+    // A montage is remade by planning a new one: its clips go back to the pool.
+    if (rows.length && ['writing', 'rendering'].includes(rows[0].status)) {
+      return { status: 409, error: 'This montage is being made right now - try again when it is ready' };
+    }
+    await montage.dissolve(mediaId, 'remade by the owner');
+    return { status: 200, body: { ok: true, status: 'remaking' } };
+  }
   const choice = sound === 'own' ? 'own' : sound === 'rotate' ? 'rotated' : null;
   if (!rows.length) {
     const m = await db.query("SELECT id FROM media WHERE id = ? AND kind = 'video'", [mediaId]);
@@ -986,6 +982,10 @@ async function skip(mediaId) {
   // finishes into the library unused (its job hook only acts on 'rendering').
   const rows = await db.query('SELECT status FROM media_prep WHERE media_id = ?', [mediaId]);
   if (rows === null) return { status: 503, error: 'Database unavailable' };
+  if (await montage.isMontage(mediaId)) {
+    await montage.dissolve(mediaId, 'skipped by the owner');
+    return { status: 200, body: { ok: true, status: 'skipped' } };
+  }
   if (rows.length) {
     await db.query("UPDATE media_prep SET status = 'skipped', error = 'Skipped by the owner' WHERE media_id = ?", [mediaId]);
   } else {
@@ -1056,8 +1056,10 @@ async function tick() {
     if (!(await isOn())) return;
     await sweep();
     await clipSoundsOffOnce();
+    await montage.sweep(await brandConfig.get());
     await queueNewVideos();
     await writeNext();
+    await montage.planNext({ preparingCount });
   } catch (err) {
     state.lastError = err.message;
     console.warn('[autopilot] tick failed: ' + err.message);
@@ -1125,9 +1127,12 @@ async function status(schedulerStatus) {
     settings: {
       publish_slots: parseSlots(cfg.publish_slots).map((m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0')),
       sound_mode: String(cfg.sound_mode || 'rotate'),
-      autoprep_buffer: Number(cfg.autoprep_buffer) || 5
+      autoprep_buffer: Number(cfg.autoprep_buffer) || 5,
+      montages: montageOn(cfg),
+      montage_clip_max_seconds: montage.clipMaxSeconds(cfg)
     },
     counts: {
+      ...(await montage.counts(cfg)),
       library_waiting: await count('SELECT COUNT(*) AS n ' + ELIGIBLE_SQL),
       analysed_waiting: await count("SELECT COUNT(*) AS n FROM media_prep WHERE status = 'analyzed'"),
       preparing: await count("SELECT COUNT(*) AS n FROM media_prep WHERE status IN ('queued','analyzing','writing','rendering')"),
@@ -1171,12 +1176,17 @@ async function handStaged() {
 }
 
 async function listPreps() {
-  return db.query(
-    "SELECT p.media_id, p.status, p.error, p.writer, p.sound_choice, p.sound_media_id, p.own_sound_id, p.output_media_id," +
-    " p.copy_json, p.analysis, p.updated_at, m.title AS media_title, s.title AS sound_title, s.url_path AS sound_url" +
+  const rows = await db.query(
+    "SELECT p.media_id, p.status, p.error, p.writer, p.sound_choice, p.sound_media_id, p.own_sound_id, p.output_media_id, p.montage_id," +
+    " p.copy_json, p.analysis, p.updated_at, m.title AS media_title, m.kind AS media_kind, m.note AS media_note," +
+    " s.title AS sound_title, s.url_path AS sound_url" +
     " FROM media_prep p LEFT JOIN media m ON m.id = p.media_id LEFT JOIN media s ON s.id = p.sound_media_id" +
     " ORDER BY p.media_id DESC LIMIT 300"
   );
+  if (!rows) return rows;
+  const cfg = await brandConfig.get();
+  // clip = a short upload kept for a montage (the Library says so)
+  return rows.map(({ media_note: n, ...r }) => ({ ...r, clip: isClip(r.media_kind, n, analysedSeconds(r.analysis), cfg) }));
 }
 
 module.exports = {

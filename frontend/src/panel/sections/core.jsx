@@ -151,7 +151,10 @@ export function AutopilotCard({ goTo }) {
   const publisherOk = ap.publisher_last_tick_s !== null && ap.publisher_last_tick_s < 120;
   const workerSeen = ago(ap.worker_last_seen_s);
   const workerOk = ap.worker_last_seen_s !== null && ap.worker_last_seen_s < 180;
-  const preparing = (c.preparing || 0) + (c.analysed_waiting || 0);
+  // short clips waiting for a montage (2026-11-14) are counted on their own
+  const clipsWaiting = c.clips_waiting || 0;
+  const preparing = (c.preparing || 0) + Math.max(0, (c.analysed_waiting || 0) - clipsWaiting);
+  const montages = !!(ap.settings && ap.settings.montages);
   // Connected platforms that do not show this system's posts publicly yet
   // (TikTok / YouTube before their app reviews) - their posts wait.
   const waitingNames = (ap.waiting_platforms || []).map((p) => PLATFORM_NAME[p] || p);
@@ -172,7 +175,9 @@ export function AutopilotCard({ goTo }) {
           </div>
           <div className="cp-ap-sub">
             {on
-              ? 'Your library videos are being prepared (captions written from the video, branded edit, sounds circulated) and land in the Publish Queue for your approval. Approved posts go out at ' + (slots || 'the posting slots') + ' Tbilisi time.'
+              ? 'Your library videos are being prepared (captions written from the video, branded edit, sounds circulated)' +
+                (montages ? ', short clips are put together into montages cut to music,' : '') +
+                ' and land in the Publish Queue for your approval. Approved posts go out at ' + (slots || 'the posting slots') + ' Tbilisi time.'
               : 'Nothing new is prepared and nothing goes out. Posts you approve wait in the queue until you switch it on. (An upload that already started finishes - TikTok and YouTube cannot call one back.)'}
           </div>
         </div>
@@ -182,6 +187,7 @@ export function AutopilotCard({ goTo }) {
       <div className="cp-ap-steps">
         <ApStep n={c.library_waiting} label="new videos in the library" onClick={() => goTo('media', 'library')} />
         <ApStep n={preparing} label="being prepared" onClick={() => goTo('media', 'library')} />
+        {montages && <ApStep n={clipsWaiting} label="short clips waiting for a montage" onClick={() => goTo('media', 'library')} />}
         <ApStep n={c.awaiting_review} label="waiting for your approval" onClick={() => goTo('media', 'publish')} />
         <ApStep n={c.scheduled} label={ap.next_up ? 'scheduled - next ' + fmtSlot(ap.next_up.scheduled_at) : 'scheduled to publish'} onClick={() => goTo('media', 'publish')} />
         <ApStep n={c.published_24h} label="published in the last 24 h" />
