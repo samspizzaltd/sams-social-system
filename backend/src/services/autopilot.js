@@ -44,8 +44,38 @@ const PLATFORM_SETTING = {
   youtube: 'platform_youtube_enabled'
 };
 const MIN_SECONDS = 3; // Reels and TikTok both refuse anything shorter
+const MIN_CLIP_SECONDS = 1; // shorter than this is no use even inside a montage
 const STUCK_WRITING_MS = 10 * 60 * 1000;
 const ANALYZE_BLOCKS_WRITING_MS = 30 * 60 * 1000;
+
+// Montages (owner 2026-11-14): "when adding small video clips I expect the
+// system to put them together to create a video that is viral, choose good
+// sound and then recommend - not choose one video to publish and that's it."
+// So while montages are on (default; branding montage_enabled = 'false' turns
+// them off), a short upload of the owner's (not a harvested repost) is montage
+// material: it is never written up and posted alone, and its own few seconds
+// of audio (mostly kitchen noise) stay out of the sound circulation.
+function montageOn(cfg) {
+  return String((cfg && cfg.montage_enabled) || 'true').trim().toLowerCase() !== 'false';
+}
+function clipMaxSeconds(cfg) {
+  const n = Number(cfg && cfg.montage_clip_max_seconds);
+  return Number.isFinite(n) && n >= 3 && n <= 60 ? n : 20;
+}
+function analysedSeconds(analysis) {
+  try {
+    const a = typeof analysis === 'string' ? JSON.parse(analysis || '{}') : (analysis || {});
+    const d = Number(a.duration);
+    return Number.isFinite(d) ? d : null;
+  } catch {
+    return null;
+  }
+}
+// kind/note of the library video + its measured length -> montage material?
+function isClip(kind, note, seconds, cfg) {
+  return montageOn(cfg) && kind === 'video' && !/^harvest:/.test(String(note || '')) &&
+    seconds !== null && seconds <= clipMaxSeconds(cfg);
+}
 
 const state = {
   loopTicks: 0,
@@ -231,7 +261,13 @@ async function saveAnalysis(payload) {
     frame_times: keptTimes.every((t) => t !== null) ? keptTimes : null
   };
 
-  if (duration < MIN_SECONDS) {
+  const cfg = await brandConfig.get();
+  const mrow = await db.query('SELECT kind, note FROM media WHERE id = ?', [mediaId]);
+  const clip = !!(mrow && mrow.length) && isClip(mrow[0].kind, mrow[0].note, analysis.duration, cfg);
+  // A montage clip's own audio does not join the circulation (see montageOn).
+  if (clip && soundId) await db.query('UPDATE media SET circulate = 0 WHERE id = ?', [soundId]);
+
+  if (duration < (clip ? MIN_CLIP_SECONDS : MIN_SECONDS)) {
     await db.query(
       "UPDATE media_prep SET status = 'skipped', analysis = ?, own_sound_id = ?, error = ? WHERE media_id = ? AND status = 'analyzing'",
       [JSON.stringify(analysis), soundId, 'Too short (' + analysis.duration + ' s) - Reels and TikTok need at least 3 seconds', mediaId]
@@ -245,8 +281,9 @@ async function saveAnalysis(payload) {
   );
   if (upd === null) return { status: 503, error: 'Database unavailable' };
   if (!upd.affectedRows) return { status: 409, error: 'Preparation changed state - analysis ignored' };
-  note('video #' + mediaId + ': analysed (' + analysis.duration + ' s, ' + kept + ' frames' + (soundId ? ', sound #' + soundId + ' added to the circulation' : ', no usable sound') + ')');
-  return { status: 200, body: { ok: true } };
+  note('video #' + mediaId + ': analysed (' + analysis.duration + ' s, ' + kept + ' frames' +
+    (clip ? ') - a short clip, kept for a montage' : (soundId ? ', sound #' + soundId + ' added to the circulation' : ', no usable sound') + ')'));
+  return { status: 200, body: { ok: true, ...(clip ? { montage_clip: true } : {}) } };
 }
 
 // ---------- sound circulation ----------
@@ -653,9 +690,17 @@ async function writeNext() {
   const inFlight = await preparingCount();
   if (inFlight === null || inFlight >= buffer) return;
 
-  const next = await db.query("SELECT * FROM media_prep WHERE status = 'analyzed' ORDER BY media_id ASC LIMIT 1");
-  if (!next || !next.length) return;
-  const prep = next[0];
+  // The next analysed video - short clips wait for a montage instead (montageOn).
+  const next = await db.query(
+    "SELECT p.*, m.kind AS m_kind, m.note AS m_note FROM media_prep p LEFT JOIN media m ON m.id = p.media_id" +
+    " WHERE p.status = 'analyzed' ORDER BY p.media_id ASC LIMIT 300"
+  );
+  const prep = (next || []).find((p) => {
+    const s = analysedSeconds(p.analysis);
+    // under 3 s = only ever montage material (kept for when montages are on)
+    return !isClip(p.m_kind, p.m_note, s, cfg) && (s === null || s >= MIN_SECONDS);
+  });
+  if (!prep) return;
   const claim = await db.query("UPDATE media_prep SET status = 'writing' WHERE media_id = ? AND status = 'analyzed'", [prep.media_id]);
   if (!claim || !claim.affectedRows) return;
 
@@ -975,6 +1020,33 @@ async function sweep() {
   );
 }
 
+// One-time (2026-11-14, montages): sounds already taken from short clips leave
+// the circulation - a few seconds of kitchen noise is not a sound to post with.
+// The owner can put any of them back in the Sound Library.
+async function clipSoundsOffOnce() {
+  const cfg = await brandConfig.get();
+  if (!montageOn(cfg)) return;
+  const done = await db.query("SELECT cfg_value FROM branding WHERE cfg_key = 'montage_clip_sounds_off'");
+  if (done === null || done.length) return;
+  // Only the clips uploaded from 14 Nov 2026 on (the first batch of clips) -
+  // older uploads were ready-made videos whose music the owner may want.
+  const rows = await db.query(
+    "SELECT p.own_sound_id, p.analysis, m.kind, m.note FROM media_prep p JOIN media m ON m.id = p.media_id" +
+    " WHERE p.own_sound_id IS NOT NULL AND m.created_at >= '2026-11-13 18:00:00'"
+  );
+  if (rows === null) return;
+  const ids = [...new Set(rows.filter((r) => isClip(r.kind, r.note, analysedSeconds(r.analysis), cfg)).map((r) => Number(r.own_sound_id)))];
+  if (ids.length) {
+    const upd = await db.query('UPDATE media SET circulate = 0 WHERE kind = \'sound\' AND id IN (' + ids.map(() => '?').join(',') + ')', ids);
+    if (upd === null) return;
+  }
+  await db.query(
+    "INSERT INTO branding (cfg_key, cfg_value) VALUES ('montage_clip_sounds_off', ?) ON DUPLICATE KEY UPDATE cfg_value = VALUES(cfg_value)",
+    [JSON.stringify({ at: new Date().toISOString(), sounds: ids.length })]
+  );
+  if (ids.length) note(ids.length + ' sounds taken from short clips left the sound circulation (kitchen noise - montages get music)');
+}
+
 async function tick() {
   state.loopTicks++;
   if (state.loopBusy) return;
@@ -983,6 +1055,7 @@ async function tick() {
     state.lastLoopAt = Date.now();
     if (!(await isOn())) return;
     await sweep();
+    await clipSoundsOffOnce();
     await queueNewVideos();
     await writeNext();
   } catch (err) {
