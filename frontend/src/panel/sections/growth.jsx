@@ -103,6 +103,18 @@ function ConnectionsView() {
             </td>
             <td></td>
           </tr>
+          {tkBiz && tkBiz.ready ? (
+            // TikTok's business interface is live: the older TikTok developer app (inbox route)
+            // is not used any more, so this row shows the business connection instead.
+            <tr>
+              <td>TikTok</td>
+              <td>{pill(true, 'connected')}</td>
+              <td className="cp-muted">
+                {(tkBiz.display_name || 'Sam’s TikTok') + (tkBiz.username ? ' (@' + tkBiz.username + ')' : '')} - public posts at the posting slots
+              </td>
+              <td></td>
+            </tr>
+          ) : (
           <tr>
             <td>TikTok</td>
             <td>{tiktok === null ? '…' : tiktok.unavailable ? <span className="cp-pill warn">status unavailable</span> : pill(!!tiktok.connected, tiktok.connected ? 'connected' : (tiktok.status === 'disconnected' ? 'disconnected' : 'not connected'))}</td>
@@ -120,6 +132,7 @@ function ConnectionsView() {
               )}
             </td>
           </tr>
+          )}
           <tr>
             <td>YouTube</td>
             <td>{youtube === null ? '\u2026' : youtube.unavailable ? <span className="cp-pill warn">status unavailable</span> : pill(!!youtube.connected, youtube.connected ? 'connected' : (!youtube.configured ? 'keys not set' : youtube.status === 'disconnected' ? 'disconnected' : youtube.status === 'expired' ? 'login expired' : 'not connected'))}</td>
@@ -155,7 +168,8 @@ function ConnectionsView() {
       </table>
       <button className="cp-btn small ghost" style={{ marginTop: 10 }} onClick={load}>Refresh</button>
       <TikTokBusinessCard status={tkBiz} onChanged={load} />
-      <TikTokRouteCard connected={!!(tiktok && tiktok.connected)} business={!!(tkBiz && tkBiz.ready)} />
+      {/* The inbox / wait choice only matters while the business connection is not working. */}
+      {!(tkBiz && tkBiz.ready) && <TikTokRouteCard connected={!!(tiktok && tiktok.connected)} business={false} />}
     </div>
   );
 }
@@ -211,8 +225,9 @@ function TikTokBusinessCard({ status, onChanged }) {
       <ErrorBox error={error} />
       {notice && <div className="cp-success">{notice}</div>}
       <p className="cp-muted">
-        TikTok's business interface lets the system post your approved TikTok videos publicly by itself, with the caption -
-        like Instagram and Facebook. It needs a TikTok developer app that TikTok has approved (free); then these three steps.
+        {status.ready
+          ? 'Approved TikTok posts go out publicly by themselves at their posting slots, with the caption - like Instagram and Facebook.'
+          : 'TikTok’s business interface lets the system post your approved TikTok videos publicly by itself, with the caption - like Instagram and Facebook. It needs a TikTok developer app that TikTok has approved (free); then these three steps.'}
       </p>
       <ul className="cp-list">
         {steps.map(([t, ok]) => <li key={t}>{ok ? '✓' : '○'} {t}</li>)}

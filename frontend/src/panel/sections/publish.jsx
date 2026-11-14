@@ -321,7 +321,9 @@ export function PublishQueue() {
     setTkSheet({ id, loading: true, privacy_level: '', disable_comment: false, disable_duet: false, disable_stitch: false, brand_organic: true, when: row.prep_media_id ? 'slot' : 'now' });
     try {
       const r = await api.get('/api/tiktok/creator-info');
-      setTkSheet((s) => (s && s.id === id ? { ...s, loading: false, creator: r.data.creator } : s));
+      // Business interface: TikTok posts are always public, so "Everyone" is the only choice - preselect it.
+      const biz = !!(r.data.creator && r.data.creator.business);
+      setTkSheet((s) => (s && s.id === id ? { ...s, loading: false, creator: r.data.creator, privacy_level: biz ? 'PUBLIC_TO_EVERYONE' : s.privacy_level } : s));
     } catch (err) {
       setTkSheet((s) => (s && s.id === id ? { ...s, loading: false, error: err.response?.data?.error || err.message } : s));
     }
@@ -372,7 +374,7 @@ export function PublishQueue() {
       ? { ...gs, [key]: { ...gs[key], ...fields } } : gs));
     if (wantTk) {
       api.get('/api/tiktok/creator-info')
-        .then((r) => patch('tk', { loading: false, creator: r.data.creator }))
+        .then((r) => patch('tk', { loading: false, creator: r.data.creator, ...(r.data.creator && r.data.creator.business ? { privacy_level: 'PUBLIC_TO_EVERYONE' } : {}) }))
         .catch((err) => patch('tk', { loading: false, error: err.response?.data?.error || err.message }));
     }
     if (yt) {
