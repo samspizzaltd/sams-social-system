@@ -1032,7 +1032,8 @@ async function clipSoundsOffOnce() {
   // older uploads were ready-made videos whose music the owner may want.
   const rows = await db.query(
     "SELECT p.own_sound_id, p.analysis, m.kind, m.note FROM media_prep p JOIN media m ON m.id = p.media_id" +
-    " WHERE p.own_sound_id IS NOT NULL AND m.created_at >= '2026-11-13 18:00:00'"
+    " WHERE p.own_sound_id IS NOT NULL AND m.created_at >= ?",
+    [montage.MONTAGE_ERA]
   );
   if (rows === null) return;
   const ids = [...new Set(rows.filter((r) => isClip(r.kind, r.note, analysedSeconds(r.analysis), cfg)).map((r) => Number(r.own_sound_id)))];

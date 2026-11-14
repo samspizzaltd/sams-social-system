@@ -116,10 +116,13 @@ const SETTING_KEYS = [
   'auto_cycle_enabled', 'auto_cycle_times', 'auto_cycle_days',
   'platform_tiktok_enabled', 'platform_instagram_enabled',
   'platform_facebook_enabled', 'platform_youtube_enabled',
-  'publish_slots', 'sound_mode', 'autoprep_buffer', 'tiktok_route'
+  'publish_slots', 'sound_mode', 'autoprep_buffer', 'tiktok_route',
+  'montage_enabled', 'montage_clip_max_seconds'
 ];
 // Settings with a fixed set of values.
-const SETTING_CHOICES = { tiktok_route: ['wait', 'drafts'] };
+const SETTING_CHOICES = { tiktok_route: ['wait', 'drafts'], montage_enabled: ['true', 'false'] };
+// Settings that are a number in a range (services/montage.js clipMaxSeconds).
+const SETTING_RANGES = { montage_clip_max_seconds: [3, 60] };
 const brandConfig = require('../services/brandConfig');
 
 router.get('/settings', async (req, res) => {
@@ -140,6 +143,10 @@ router.put('/settings', async (req, res) => {
   }
   if (SETTING_CHOICES[b.key] && !SETTING_CHOICES[b.key].includes(String(b.value))) {
     return res.status(400).json({ error: b.key + ' must be one of: ' + SETTING_CHOICES[b.key].join(', ') });
+  }
+  const range = SETTING_RANGES[b.key];
+  if (range && !(Number(b.value) >= range[0] && Number(b.value) <= range[1])) {
+    return res.status(400).json({ error: b.key + ' must be a number from ' + range[0] + ' to ' + range[1] });
   }
   const rows = await db.query(
     'INSERT INTO branding (cfg_key, cfg_value) VALUES (?,?) ON DUPLICATE KEY UPDATE cfg_value = VALUES(cfg_value)',

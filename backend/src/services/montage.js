@@ -54,10 +54,17 @@ function note(msg) {
 function montageOn(cfg) {
   return String((cfg && cfg.montage_enabled) || 'true').trim().toLowerCase() !== 'false';
 }
+// 30 s: phone clips run long sometimes (the 14 Nov batch had a 25 s one) and
+// the owner wants every clip in a montage, never posted alone.
+const CLIP_MAX_DEFAULT = 30;
 function clipMaxSeconds(cfg) {
   const n = Number(cfg && cfg.montage_clip_max_seconds);
-  return Number.isFinite(n) && n >= 3 && n <= 60 ? n : 20;
+  return Number.isFinite(n) && n >= 3 && n <= 60 ? n : CLIP_MAX_DEFAULT;
 }
+// Montages began with the clips uploaded on 14 Nov 2026. Older uploads were
+// ready-made videos: the sweep never takes those back (not even ones whose
+// posts the owner dropped) and their sounds stay as they were.
+const MONTAGE_ERA = '2026-11-13 18:00:00';
 function parseJson(text, fallback) {
   try { return typeof text === 'string' ? JSON.parse(text || 'null') || fallback : (text || fallback); } catch { return fallback; }
 }
@@ -592,9 +599,10 @@ async function sweep(cfg) {
   if (!montageOn(cfg)) return;
   const singles = await db.query(
     "SELECT p.media_id, p.analysis, m.kind, m.note FROM media_prep p JOIN media m ON m.id = p.media_id" +
-    " WHERE p.status = 'staged' AND m.kind = 'video'" +
+    " WHERE p.status = 'staged' AND m.kind = 'video' AND m.created_at >= ?" +
     " AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.prep_media_id = p.media_id" +
-    "   AND q.status IN ('approved_publishing','publishing','published','unknown','in_drafts'))"
+    "   AND q.status IN ('approved_publishing','publishing','published','unknown','in_drafts'))",
+    [MONTAGE_ERA]
   );
   let back = 0;
   for (const s of singles || []) {
@@ -611,7 +619,8 @@ async function sweep(cfg) {
   }
   const short = await db.query(
     "SELECT p.media_id, p.analysis, m.kind, m.note FROM media_prep p JOIN media m ON m.id = p.media_id" +
-    " WHERE p.status = 'skipped' AND p.error LIKE 'Too short%' AND m.kind = 'video'"
+    " WHERE p.status = 'skipped' AND p.error LIKE 'Too short%' AND m.kind = 'video' AND m.created_at >= ?",
+    [MONTAGE_ERA]
   );
   for (const s of short || []) {
     const sec = analysedSeconds(s.analysis);
@@ -632,7 +641,7 @@ async function counts(cfg) {
 }
 
 module.exports = {
-  montageOn, clipMaxSeconds, analysedSeconds, isClip,
+  montageOn, clipMaxSeconds, analysedSeconds, isClip, MONTAGE_ERA,
   planNext, release, dissolve, isMontage, onRenderFailed, sweep, counts,
   MIN_CLIPS, MAX_CLIPS,
   _cleanPlan: cleanPlan, // tests
