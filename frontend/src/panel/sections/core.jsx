@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../api';
+import { MoneyAlert } from './readiness';
 
 // ---------- shared bits ----------
 
@@ -279,14 +280,15 @@ export function Overview({ goTo }) {
   return (
     <div>
       <AutopilotCard goTo={goTo} />
+      <MoneyAlert metrics={real} goTo={goTo} />
       <div className="cp-stat-row">
         <Stat label="Cycles completed" value={h ? fmt(h.cyclesCompleted) : '—'} />
         <Stat label="Posts published" value={realPublished === null ? '—' : fmt(realPublished)}
           hint="via the publish queue, with your approval" />
         <Stat label="Views" value={real && real.totals.views !== null ? fmt(real.totals.views) : '—'}
-          hint={real ? 'real, Instagram + Facebook (' + real.totals.tracked + ' posts read)' : 'real numbers from the platforms'} />
+          hint={real ? 'real, all four platforms (' + real.totals.tracked + ' posts read)' : 'real numbers from the platforms'} />
         <Stat label="Followers" value={real && real.totals.followers !== null ? fmt(real.totals.followers) : '—'}
-          hint="real, Instagram + Facebook" />
+          hint="real, all four platforms" />
         <Stat label="Revenue recorded" value={data.revenueTotal !== null ? `₾ ${fmt(data.revenueTotal)}` : '—'} />
         <Stat label="Awaiting approval" value={data.pendingContent} />
       </div>

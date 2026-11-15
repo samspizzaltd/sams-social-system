@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../api';
 import { Stat, ErrorBox, Loading, ConfirmButton } from './core';
+import { ReadinessTable } from './readiness';
 
 const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n);
 const fmtDate = (d) => {
@@ -608,24 +609,29 @@ function RealWhatWorked({ view }) {
   );
 }
 
-// Monetization -> Opportunities: real audience only, no invented payouts.
+// Monetization -> Opportunities: the readiness table (real numbers against the
+// platforms' published bars, readiness.jsx) and the real audience. No invented
+// payouts (the old demo engine made them up from an assumed 15,000 followers).
 function RealAudience() {
   const { data, error } = useMetrics();
   if (error === 'not-deployed') return <p className="cp-muted">Real audience numbers arrive with the next server update.</p>;
   if (error) return <ErrorBox error={error} />;
   if (!data) return <Loading />;
+  const pf = data.platforms || {};
+  const followersOf = (k) => (pf[k] ? pf[k].followers : null);
   return (
-    <div className="cp-card">
-      <h3>Your audience today (real)</h3>
-      <table className="cp-kv"><tbody>
-        <tr><td>Instagram followers</td><td>{dash(data.platforms.instagram.followers)}</td></tr>
-        <tr><td>Facebook followers</td><td>{dash(data.platforms.facebook_page.followers)}</td></tr>
-        <tr><td>Views on posts we can read</td><td>{dash(data.totals.views)}</td></tr>
-      </tbody></table>
-      <p className="cp-muted">
-        The "program eligibility", "potential $/month" and opportunity list shown here before were made up by the
-        old demo engine (it assumed 15,000 followers) and have been removed. Record real income in Record Income when it arrives.
-      </p>
+    <div>
+      <ReadinessTable metrics={data} />
+      <div className="cp-card">
+        <h3>Your audience today (real)</h3>
+        <table className="cp-kv"><tbody>
+          <tr><td>Instagram followers</td><td>{dash(followersOf('instagram'))}</td></tr>
+          <tr><td>Facebook followers</td><td>{dash(followersOf('facebook_page'))}</td></tr>
+          <tr><td>TikTok followers</td><td>{dash(followersOf('tiktok'))}</td></tr>
+          <tr><td>YouTube subscribers</td><td>{dash(followersOf('youtube'))}</td></tr>
+          <tr><td>Views on posts we can read</td><td>{dash(data.totals && data.totals.views)}</td></tr>
+        </tbody></table>
+      </div>
     </div>
   );
 }
