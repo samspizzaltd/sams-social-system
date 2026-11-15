@@ -7,6 +7,7 @@ const publicRoute = require('./publicRoute');
 const trendSounds = require('./trendSounds');
 const recommendations = require('./recommendations');
 const montage = require('./montage');
+const dayparts = require('./dayparts');
 
 // Autopilot (owner request 2026-11-06): "I have provided you with many videos
 // that are ready for publishing - add your magic when publishing them, and
@@ -103,25 +104,16 @@ function workerSeen() {
 
 // ---------- posting slots ----------
 
-function parseSlots(text) {
-  const out = [];
-  for (const part of String(text || '').split(',')) {
-    const m = /^(\d{1,2}):(\d{2})$/.exec(part.trim());
-    if (!m) continue;
-    const h = Number(m[1]);
-    const min = Number(m[2]);
-    if (h > 23 || min > 59) continue;
-    out.push(h * 60 + min);
-  }
-  const uniq = [...new Set(out)].sort((a, b) => a - b);
-  return uniq.length ? uniq : [12 * 60 + 30, 19 * 60];
-}
+// parseSlots lives in dayparts.js (montage.js needs it too); re-exported below.
+const parseSlots = dayparts.parseSlots;
 
 // Next posting slot (epoch ms) on `platform` that no other approved,
 // publishing or published row already holds. One post per platform per slot.
-async function nextFreeSlot(platform) {
+// daypart (dayparts.js): a video made for the morning takes only morning
+// slots, an afternoon/evening video only the later ones; null = any slot.
+async function nextFreeSlot(platform, daypart) {
   const cfg = await brandConfig.get();
-  const slots = parseSlots(cfg.publish_slots);
+  const slots = dayparts.slotsFor(parseSlots(cfg.publish_slots), daypart);
   const now = Date.now();
   const taken = await db.query(
     "SELECT scheduled_at FROM publish_queue WHERE platform = ? AND scheduled_at IS NOT NULL AND scheduled_at > ?" +
@@ -383,7 +375,10 @@ function copySchema(opts) {
   if (!opts || !opts.sound) return s;
   const soundEnum = (opts.sound.allowOwn ? ['own'] : []).concat(opts.sound.rotation.map((r) => String(r.id)));
   s.properties.sound_pick = { type: 'string', enum: soundEnum.length ? soundEnum : ['own'] };
-  s.properties.instagram_sound_pick = { type: 'string', enum: ['none'].concat(opts.sound.trends.map((t) => t.audio_id)) };
+  // Music by time of day: when there are tracks for this part of the day, the
+  // Instagram post carries one of them (no "none").
+  const igIds = opts.sound.trends.map((t) => t.audio_id);
+  s.properties.instagram_sound_pick = { type: 'string', enum: igIds.length ? igIds : ['none'] };
   s.properties.sound_reason = { type: 'string' };
   // Edit plan + two more hook pairs (editBrief). No numeric limits here -
   // structured outputs do not take them; cleanPlan() enforces the limits.
@@ -412,7 +407,11 @@ function soundBrief(opts) {
   if (o.allowOwn && o.rotation.length) {
     lines.push('Default to one of the circulated sounds (the owner wants sounds to travel between videos); pick "own" only when his sound recommendations call for it.');
   }
-  lines.push('', 'INSTAGRAM TRENDING SOUND (instagram_sound_pick) - optional, for the Instagram post only: Instagram adds this licensed track on top of the video. Pick "none" or one id:');
+  const morning = o.daypart === 'morning';
+  lines.push('', 'INSTAGRAM SOUND (instagram_sound_pick), for the Instagram post only: Instagram adds this licensed track on top of the video. ' +
+    (morning
+      ? 'This video goes out in the MORNING slot - rule of the owner: morning posts play a Fairouz song. Pick the Fairouz track that fits it best:'
+      : 'This video goes out in the AFTERNOON/EVENING slot - rule of the owner: those posts play a trending sound. Pick the trending track that fits it best:'));
   if (!o.trends.length) lines.push('- (none approved right now - pick "none")');
   for (const t of o.trends) {
     lines.push('- "' + t.audio_id + '": "' + (t.title || 'untitled') + '"' + (t.artist ? ' by ' + t.artist : '') +
@@ -421,7 +420,7 @@ function soundBrief(opts) {
       (t.watch_terms && t.watch_terms.length ? '; matches the owner\'s watch list: ' + t.watch_terms.join(', ') : '') +
       '; used on ' + t.uses + ' of our posts)');
   }
-  if (o.trends.length) lines.push('Prefer a sound that just started trending or is climbing and fits the mood of the video; pick "none" if none fits or the recommendations say so.');
+  if (o.trends.length) lines.push(morning ? 'Pick the Fairouz song whose mood fits the video; prefer the ones used least.' : 'Prefer a sound that just started trending or is climbing and fits the mood of the video; prefer the ones used least.');
   lines.push('', recommendations.promptBlock("The owner's sound recommendations:", opts.recs.sounds) || 'The owner has no sound recommendations yet.');
   lines.push('sound_reason: one short sentence for the owner saying why you picked these sounds.');
   return lines.join('\n');
@@ -699,6 +698,11 @@ async function writeNext() {
     sounds: await recommendations.forArea('sounds')
   };
   const options = await soundOptions(prep, analysis, cfg, recs.sounds);
+  // Music by time of day (dayparts.js): this video is made for one part of the
+  // day; its Instagram post gets a Fairouz song (morning) or a trending sound.
+  const daypart = await dayparts.next();
+  options.daypart = daypart;
+  options.trends = await dayparts.igTracks(daypart);
   const { copy, writer, picks } = await writeCopy(prep, media, { sound: options, recs });
 
   // The writer's sound pick, checked against what was offered. Without a
@@ -728,15 +732,14 @@ async function writeNext() {
   // Instagram trending sound (approved by the owner; Instagram adds the
   // licensed track to the Instagram post only - trendSounds.js).
   const trendById = new Map(options.trends.map((t) => [t.audio_id, t]));
-  let igTrend = null;
-  if (picks) {
-    if (picks.instagram && picks.instagram !== 'none' && trendById.has(picks.instagram)) igTrend = trendById.get(picks.instagram);
-  } else {
-    // No writer pick: the freshest approved sound that just started or climbs.
-    igTrend = options.trends.find((t) => t.badge === 'just_started' || t.badge === 'climbing') || null;
-  }
+  let igTrend = picks && picks.instagram && trendById.has(picks.instagram) ? trendById.get(picks.instagram) : null;
+  // No valid pick (Claude unavailable or off the list): the least used track of
+  // this part of the day - the time-of-day rule always applies when it can.
+  if (!igTrend) igTrend = options.trends[0] || null;
   if (igTrend) copy.ig_audio = { audio_id: igTrend.audio_id, title: igTrend.title, artist: igTrend.artist, audio_type: igTrend.audio_type };
-  if (picks && picks.reason) copy.sound_reason = picks.reason;
+  copy.daypart = daypart;
+  const partLine = dayparts.label(daypart, cfg.publish_slots);
+  copy.sound_reason = [partLine, picks && picks.reason ? picks.reason : ''].filter(Boolean).join(' ');
 
   // The writer's edit plan, checked (cleanPlan). Cuts and a held closing shot
   // go to MagicCut as segments; the text times apply either way.
@@ -769,7 +772,7 @@ async function writeNext() {
     [job.insertId, sound ? sound.id : null, choice, JSON.stringify(copy), writer, prep.media_id]
   );
   note('video #' + prep.media_id + ': edit queued (' + (sound ? 'sound: ' + (sound.title || '#' + sound.id) : 'its own sound') +
-    (copy.ig_audio ? '; Instagram: trending "' + (copy.ig_audio.title || copy.ig_audio.audio_id) + '"' : '') + ')');
+    (copy.ig_audio ? '; Instagram (' + daypart + '): "' + (copy.ig_audio.title || copy.ig_audio.audio_id) + '"' : '') + ')');
 }
 
 // ---------- worker callback: a job finished ----------
@@ -1048,16 +1051,64 @@ async function clipSoundsOffOnce() {
   if (ids.length) note(ids.length + ' sounds taken from short clips left the sound circulation (kitchen noise - montages get music)');
 }
 
+// The owner changed the posting times (2026-11-15: the morning slot moved from
+// 12:30 to 10:00 "for everyday"): approved posts still booked on a time that
+// is no longer a slot move to the same day's slot of the same part of the day,
+// when that slot is still ahead and free on their platform. Otherwise they keep
+// their time (today's 12:30 posts after 10:00 has passed, for example). Rows
+// sent "now" (no time) and retries after an error are left alone.
+async function moveOffOldSlots() {
+  const cfg = await brandConfig.get();
+  const slots = parseSlots(cfg.publish_slots);
+  const now = Date.now();
+  const rows = await db.query(
+    "SELECT id, platform, scheduled_at FROM publish_queue WHERE status = 'approved_publishing' AND creation_id IS NULL AND error IS NULL" +
+    ' AND scheduled_at IS NOT NULL AND scheduled_at > ? ORDER BY scheduled_at ASC',
+    [now + 60 * 1000]
+  );
+  if (!rows || !rows.length) return 0;
+  const tbilisi = (t) => new Date(Number(t) + TBILISI_OFFSET_MS);
+  const minuteOf = (t) => tbilisi(t).getUTCHours() * 60 + tbilisi(t).getUTCMinutes();
+  let moved = 0;
+  for (const r of rows) {
+    const t = Number(r.scheduled_at);
+    const old = minuteOf(t);
+    if (slots.includes(old)) continue;
+    const same = dayparts.slotsFor(slots, dayparts.partOfMinutes(old));
+    const target = same.slice().sort((a, b) => Math.abs(a - old) - Math.abs(b - old))[0];
+    const d = tbilisi(t);
+    const at = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, target) - TBILISI_OFFSET_MS;
+    if (at <= now + 60 * 1000) continue;
+    const busy = await db.query(
+      "SELECT id FROM publish_queue WHERE platform = ? AND scheduled_at = ? AND status IN ('approved_publishing','publishing','published','unknown','in_drafts') LIMIT 1",
+      [r.platform, at]
+    );
+    if (!busy || busy.length) continue;
+    const u = await db.query(
+      "UPDATE publish_queue SET scheduled_at = ? WHERE id = ? AND status = 'approved_publishing' AND creation_id IS NULL AND scheduled_at = ?",
+      [at, r.id, t]
+    );
+    if (u && u.affectedRows) moved++;
+  }
+  if (moved) {
+    const hhmm = (m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    note(moved + ' approved post(s) moved to the new posting times (' + slots.map(hhmm).join(', ') + ')');
+  }
+  return moved;
+}
+
 async function tick() {
   state.loopTicks++;
   if (state.loopBusy) return;
   state.loopBusy = true;
   try {
     state.lastLoopAt = Date.now();
+    await moveOffOldSlots(); // also while OFF - it only corrects the times
     if (!(await isOn())) return;
     await sweep();
     await clipSoundsOffOnce();
     await montage.sweep(await brandConfig.get());
+    await montage.resoundOldOnce(await brandConfig.get()); // one time: new sounds for waiting montages (2026-11-15)
     await queueNewVideos();
     await writeNext();
     await montage.planNext({ preparingCount });
@@ -1195,6 +1246,7 @@ module.exports = {
   saveAnalysis, onJobStatus, prepareAgain, usePair, skip, forgetFrames,
   start, status, listPreps, handStaged, PREP_DIR,
   tick, // exported for the test harness
+  moveOffOldSlots, // test harness
   _preparingCount: preparingCount, // test harness
   _cleanPlan: cleanPlan // test harness
 };

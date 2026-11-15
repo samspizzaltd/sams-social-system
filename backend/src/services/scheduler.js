@@ -5,6 +5,7 @@ const tiktokPublish = require('./tiktokPublish');
 const tiktokBusiness = require('./tiktokBusiness');
 const youtubePublish = require('./youtubePublish');
 const autopilot = require('./autopilot');
+const dayparts = require('./dayparts');
 const publicRoute = require('./publicRoute');
 
 // Two background loops:
@@ -425,7 +426,7 @@ async function finisherTick() {
         // fire every overdue post at once and undo the spacing.
         for (const r of rows) {
           if (r.creation_id || !r.scheduled_at || Number(r.scheduled_at) >= now - MISSED_SLOT_MS) continue;
-          const next = await autopilot.nextFreeSlot(r.platform);
+          const next = await autopilot.nextFreeSlot(r.platform, await dayparts.forPrep(r.prep_media_id));
           const moved = await db.query(
             "UPDATE publish_queue SET scheduled_at = ? WHERE id = ? AND status = 'approved_publishing' AND creation_id IS NULL",
             [next, r.id]

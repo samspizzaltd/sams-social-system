@@ -4,6 +4,7 @@ const tiktokPublish = require('../services/tiktokPublish');
 const tiktokBusiness = require('../services/tiktokBusiness');
 const youtubePublish = require('../services/youtubePublish');
 const autopilot = require('../services/autopilot');
+const dayparts = require('../services/dayparts');
 const publicRoute = require('../services/publicRoute');
 const trendSounds = require('../services/trendSounds');
 
@@ -166,7 +167,8 @@ router.post('/publish-queue/:id/approve', async (req, res) => {
     }
   }
 
-  const scheduledAt = when === 'slot' ? await autopilot.nextFreeSlot(row[0].platform) : null;
+  // A video made for one part of the day (dayparts.js) takes only slots of that part.
+  const scheduledAt = when === 'slot' ? await autopilot.nextFreeSlot(row[0].platform, await dayparts.forPrep(row[0].prep_media_id)) : null;
   const rows = await db.query(
     "UPDATE publish_queue SET status = 'approved_publishing', error = NULL, attempts = 0, creation_id = NULL, post_options = ?, scheduled_at = ? WHERE id = ? AND status IN ('pending_review','failed')",
     [postOptions, scheduledAt, req.params.id]

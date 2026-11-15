@@ -5,6 +5,7 @@ const brandConfig = require('./brandConfig');
 const claude = require('./claudeClient');
 const recommendations = require('./recommendations');
 const trendSounds = require('./trendSounds');
+const dayparts = require('./dayparts');
 
 // Montages (owner 2026-11-14): "when adding small video clips I expect the
 // system to put them together to create a video that is viral, choose good
@@ -113,8 +114,11 @@ function framesOf(mediaId) {
 }
 
 // Music the montage can be cut to: circulating sounds the Sound Library knows
-// are music (Analyze & name facts) and that last long enough.
-async function musicOptions() {
+// are music (Analyze & name facts) and that last long enough. Owner
+// 2026-11-15: not the same track on every montage - the tracks the latest
+// videos were cut to are left out (while others remain), least used first.
+// minSeconds: only tracks at least this long (a new sound for a finished cut).
+async function musicOptions(minSeconds) {
   const rows = await db.query(
     "SELECT m.id, m.title, m.ai_facts, m.ai_tags," +
     " (SELECT COUNT(*) FROM media_prep p WHERE p.sound_media_id = m.id AND p.status NOT IN ('failed','skipped')) AS uses" +
@@ -146,10 +150,15 @@ async function musicOptions() {
       avg_views: p && p.avg_views != null ? Number(p.avg_views) : null
     });
   }
-  // the most promising first: a clear beat, energy, then least used
+  let list = minSeconds ? out.filter((m) => m.seconds >= minSeconds) : out;
+  if (!list.length) list = out;
+  const recent = await dayparts.recentMusic(3);
+  const fresh = list.filter((m) => !recent.has(m.id));
+  if (fresh.length) list = fresh;
+  // least used first, then a clear beat and energy
   const energy = { upbeat: 2, medium: 1 };
-  out.sort((a, b) => (energy[b.energy] || 0) - (energy[a.energy] || 0) || b.beat_strength - a.beat_strength || a.uses - b.uses);
-  return out.slice(0, 15);
+  list.sort((a, b) => a.uses - b.uses || (energy[b.energy] || 0) - (energy[a.energy] || 0) || b.beat_strength - a.beat_strength);
+  return list.slice(0, 15);
 }
 
 // ---------- the plan, made safe ----------
@@ -297,7 +306,8 @@ async function pick(clips, music, recs) {
     '- clip_ids: ' + MIN_CLIPS + '-' + MAX_CLIPS + ' clips (5-7 is best) that belong together - one theme: a dish being made, a meal coming together, the kitchen at work, a full table, the place itself. ' +
       'In story order: open with the most eye-catching shot (movement, steam, a pour, a cut, cheese), build up, and end on the payoff (the finished plate, a full table, the storefront).',
     '- Leave out clips that do not fit the theme - they wait for a later montage. Never use a clip twice.',
-    '- sound_pick: the music that fits the mood - prefer an upbeat track with a clear beat that lasts as long as the montage (about 1.5-3 s per clip).',
+    '- sound_pick: the music that fits the mood - prefer an upbeat track with a clear beat that lasts as long as the montage (about 1.5-3 s per clip). ' +
+      'Every montage gets its own track: the ones the latest videos used are not in the list; among good fits take the one used least.',
     '- title: max 6 words, for the owner. theme: one sentence. reason: one short sentence why these clips and this music.'
   );
   const out = await claude.generateJSON({ system: await systemLine(), prompt: lines.join('\n'), schema, maxTokens: 1500, effort: 'medium' });
@@ -305,7 +315,8 @@ async function pick(clips, music, recs) {
   const known = new Map(clips.map((c) => [String(c.media_id), c]));
   const chosen = [...new Set((out.clip_ids || []).map(String))].filter((id) => known.has(id)).slice(0, MAX_CLIPS).map((id) => known.get(id));
   if (chosen.length < 3) return null;
-  const sound = music.find((m) => String(m.id) === String(out.sound_pick)) || null;
+  // "own" = the clips keep their sound; anything off the list = the least used track
+  const sound = String(out.sound_pick) === 'own' ? null : (music.find((m) => String(m.id) === String(out.sound_pick)) || music[0] || null);
   return { title: cut(out.title, 60), theme: cut(out.theme, 300), clips: chosen, music: sound, reason: cut(out.reason, 300) };
 }
 
@@ -318,6 +329,7 @@ function fallbackPick(clips, music) {
 // ---------- Claude, step 2: the best moments + the copy ----------
 
 function editSchema(ids, trends) {
+  const igIds = trends.map((t) => String(t.audio_id));
   const str = { type: 'string' };
   return {
     type: 'object',
@@ -337,7 +349,8 @@ function editSchema(ids, trends) {
           properties: { clip_id: { type: 'string', enum: ids }, start: { type: 'number' }, end: { type: 'number' } }
         }
       },
-      instagram_sound_pick: { type: 'string', enum: ['none'].concat(trends.map((t) => String(t.audio_id))) },
+      // music by time of day: one of the part-of-day tracks whenever there are any
+      instagram_sound_pick: { type: 'string', enum: igIds.length ? igIds : ['none'] },
       edit_plan_note: str
     }
   };
@@ -350,7 +363,7 @@ function timesFor(clip, count) {
   return null;
 }
 
-async function edit(picked, recs, trends) {
+async function edit(picked, recs, trends, daypart) {
   const content = [];
   for (const c of picked.clips) {
     const files = framesOf(c.media_id);
@@ -365,10 +378,16 @@ async function edit(picked, recs, trends) {
     }
   }
   const capRecs = recommendations.promptBlock("The owner's recommendations for the hook, end line and captions:", [].concat(recs.editing || [], recs.captions || []));
+  const morning = daypart === 'morning';
   const trendLines = trends.length
-    ? ['', 'INSTAGRAM TRENDING SOUND (instagram_sound_pick) - optional, Instagram adds this licensed track on top of the Instagram post only. "none" or one id:']
-      .concat(trends.map((t) => '- "' + t.audio_id + '": "' + (t.title || 'untitled') + '"' + (t.artist ? ' by ' + t.artist : '') + ' (' + (t.badge || 'trending') + ')'))
-    : ['', 'instagram_sound_pick: "none" (no trending sound approved right now).'];
+    ? ['', 'INSTAGRAM SOUND (instagram_sound_pick) - Instagram adds this licensed track on top of the Instagram post only. ' +
+      (morning
+        ? 'This montage goes out in the MORNING slot, and the owner wants a Fairouz song on morning posts - pick the Fairouz track whose mood fits it best:'
+        : 'This montage goes out in the AFTERNOON/EVENING slot, and the owner wants a trending sound on those posts - pick the trending track that fits it best:')]
+      .concat(trends.map((t) => '- "' + t.audio_id + '": "' + (t.title || 'untitled') + '"' + (t.artist ? ' by ' + t.artist : '') +
+        ' (' + (t.badge || 'trending') + '; used on ' + (Number(t.uses) || 0) + ' of our posts)'))
+      .concat(['Among good fits, take the one used least.'])
+    : ['', 'instagram_sound_pick: "none" (no ' + (morning ? 'Fairouz song' : 'trending sound') + ' approved right now).'];
   content.push({
     type: 'text',
     text: [
@@ -437,10 +456,11 @@ async function planNext({ preparingCount }) {
   let writer = 'claude';
   if (!picked) { picked = fallbackPick(clips, music); writer = 'template'; }
 
-  const trends = ((await trendSounds.approvedFresh(10)) || []).map((t) => ({
-    audio_id: String(t.audio_id), title: t.title, artist: t.artist, audio_type: t.audio_type, badge: t.badge
-  }));
-  const out = writer === 'claude' ? await edit(picked, recs, trends) : null;
+  // Music by time of day (dayparts.js): this montage is made for one part of
+  // the day - a Fairouz song (morning) or a trending sound on Instagram.
+  const daypart = await dayparts.next();
+  const trends = await dayparts.igTracks(daypart);
+  const out = writer === 'claude' ? await edit(picked, recs, trends, daypart) : null;
   if (!out) writer = 'template';
   const plan = cleanPlan(picked.clips, out && out.moments, picked.music) || cleanPlan(picked.clips, null, picked.music);
   if (!plan) {
@@ -467,9 +487,10 @@ async function planNext({ preparingCount }) {
     : [{ hook: copy.hook, end_line: copy.end_line }];
   copy.hook_options = pairs.filter((p, i) => pairs.findIndex((q) => q.hook === p.hook && q.end_line === p.end_line) === i);
   copy.chosen_pair = 0;
-  if (picked.reason) copy.sound_reason = picked.reason;
-  const ig = out && out.instagram_sound_pick && out.instagram_sound_pick !== 'none'
-    ? trends.find((t) => t.audio_id === String(out.instagram_sound_pick)) : null;
+  copy.daypart = daypart;
+  copy.sound_reason = [dayparts.label(daypart, cfg.publish_slots), picked.reason || ''].filter(Boolean).join(' ');
+  // no valid pick (Claude down / off the list): the least used track of this part of the day
+  const ig = (out && trends.find((t) => t.audio_id === String(out.instagram_sound_pick))) || trends[0] || null;
   if (ig) copy.ig_audio = { audio_id: ig.audio_id, title: ig.title, artist: ig.artist, audio_type: ig.audio_type };
   const titleOf = new Map(clipsUsed.map((c) => [c.media_id, c.title]));
   copy.montage = {
@@ -502,25 +523,7 @@ async function planNext({ preparingCount }) {
     return;
   }
   const clipInfo = new Map(clipsUsed.map((c) => [c.media_id, c]));
-  const params = {
-    prep_media_id: montageId,
-    montage: true,
-    clips: plan.segments.map((s) => ({
-      media_id: s.media_id, from: s.from, to: s.to,
-      width: clipInfo.get(s.media_id).width, height: clipInfo.get(s.media_id).height
-    })),
-    hold: plan.hold,
-    hook: copy.hook,
-    end_line: copy.end_line,
-    sound: picked.music ? 'rotated' : 'own',
-    duration: plan.duration,
-    width: 1080,
-    height: 1920,
-    hook_start: plan.hook_start,
-    hook_end: plan.hook_end,
-    end_start: plan.end_start,
-    output_title: cut('✨ Montage: ' + title, 120)
-  };
+  const params = renderParams(montageId, plan, clipInfo, copy, picked.music, title);
   const mediaIds = ids.concat(picked.music ? [picked.music.id] : []).join(',');
   const analysis = { duration: plan.duration, width: 1080, height: 1920, has_audio: true, frames: 0, montage: true, clips: ids };
   const job = await db.query("INSERT INTO render_jobs (template, params, media_ids, status) VALUES ('MagicCut', ?, ?, 'queued')", [JSON.stringify(params), mediaIds]);
@@ -561,6 +564,122 @@ async function dissolve(montageId, reason) {
   await db.query("UPDATE media_prep SET status = 'skipped', error = ? WHERE media_id = ?", [reason, montageId]);
   await release(montageId);
   note('montage #' + montageId + ': ' + reason + ' - its clips go back to the pool');
+}
+
+// Render params for a montage plan (the planner and a new-sound cut share it).
+function renderParams(montageId, plan, clipInfo, copy, music, title) {
+  return {
+    prep_media_id: montageId,
+    montage: true,
+    clips: plan.segments.map((s) => ({
+      media_id: s.media_id, from: s.from, to: s.to,
+      width: clipInfo.get(s.media_id).width, height: clipInfo.get(s.media_id).height
+    })),
+    hold: plan.hold,
+    hook: copy.hook,
+    end_line: copy.end_line,
+    sound: music ? 'rotated' : 'own',
+    duration: plan.duration,
+    width: 1080,
+    height: 1920,
+    hook_start: plan.hook_start,
+    hook_end: plan.hook_end,
+    end_start: plan.end_start,
+    output_title: cut('✨ Montage: ' + title, 120)
+  };
+}
+
+// New sounds for a finished montage that still waits for review: another
+// Sound Library track for the video (not the one it had, not one the latest
+// videos used, long enough for the cut) and the Instagram track of its part of
+// the day. Same clips, same moments (re-snapped to the new beat), same hook and
+// captions. Its waiting posts give way to the new cut. Returns true when queued.
+async function resound(row, cfg) {
+  const copy = parseJson(row.copy_json, {}) || {};
+  const m = copy.montage;
+  if (!m || !Array.isArray(m.clips) || m.clips.length < 3) return false;
+  const crow = await db.query("SELECT media_id, analysis FROM media_prep WHERE montage_id = ? AND status = 'in_montage'", [row.media_id]);
+  if (!crow) return false;
+  const info = new Map(crow.map((c) => {
+    const a = parseJson(c.analysis, {}) || {};
+    return [Number(c.media_id), { media_id: Number(c.media_id), duration: Number(a.duration) || 0, width: Number(a.width) || null, height: Number(a.height) || null }];
+  }));
+  const clips = m.clips.map((c) => info.get(Number(c.id))).filter(Boolean);
+  if (clips.length < 3) return false;
+  const oldMusic = m.music ? Number(m.music.id) : null;
+  const length = Number(copy.edit_plan && copy.edit_plan.duration) || 0;
+  // the cut was made for upbeat music: the liveliest track among the least used
+  // ones that are not recent (musicOptions) and long enough
+  const energy = { upbeat: 2, medium: 1 };
+  const track = (await musicOptions(length ? length + 0.2 : 0))
+    .sort((a, b) => (energy[b.energy] || 0) - (energy[a.energy] || 0) || b.beat_strength - a.beat_strength || a.uses - b.uses)
+    .find((x) => x.id !== oldMusic) || null;
+  if (!track) return false;
+  const moments = m.clips.map((c) => ({ clip_id: String(c.id), start: Number(c.from), end: Number(c.to) }));
+  const plan = cleanPlan(clips, moments, track);
+  if (!plan) return false;
+  const daypart = await dayparts.next();
+  const ig = (await dayparts.igTracks(daypart))[0] || null;
+
+  copy.daypart = daypart;
+  if (ig) copy.ig_audio = { audio_id: ig.audio_id, title: ig.title, artist: ig.artist, audio_type: ig.audio_type };
+  else delete copy.ig_audio;
+  copy.sound_reason = [dayparts.label(daypart, cfg.publish_slots), 'New music for this cut: "' + track.title + '".'].join(' ');
+  const titleOf = new Map(m.clips.map((c) => [Number(c.id), c.title || '']));
+  copy.montage = Object.assign({}, m, {
+    clips: plan.segments.map((s) => ({ id: s.media_id, title: titleOf.get(s.media_id) || '', from: s.from, to: s.to })),
+    music: { id: track.id, title: track.title, bpm: track.bpm },
+    beat: plan.beat
+  });
+  copy.edit_plan = Object.assign({}, copy.edit_plan || {}, {
+    cut: true, segments: plan.segments.map((s) => ({ from: s.from, to: s.to, media_id: s.media_id })), hold: plan.hold,
+    hook_start: plan.hook_start, hook_end: plan.hook_end, end_start: plan.end_start, duration: plan.duration
+  });
+  delete copy.render_retried;
+
+  const title = m.title || "Fresh from Sam's kitchen";
+  const params = renderParams(row.media_id, plan, info, copy, track, title);
+  const ids = [...new Set(plan.segments.map((s) => s.media_id))];
+  const job = await db.query("INSERT INTO render_jobs (template, params, media_ids, status) VALUES ('MagicCut', ?, ?, 'queued')", [JSON.stringify(params), ids.concat([track.id]).join(',')]);
+  if (!job || !job.insertId) return false;
+  const analysis = { duration: plan.duration, width: 1080, height: 1920, has_audio: true, frames: 0, montage: true, clips: ids };
+  const upd = await db.query(
+    "UPDATE media_prep SET status = 'rendering', render_job_id = ?, sound_media_id = ?, sound_choice = 'rotated', analysis = ?, copy_json = ?, error = NULL" +
+    " WHERE media_id = ? AND status = 'staged'",
+    [job.insertId, track.id, JSON.stringify(analysis), JSON.stringify(copy), row.media_id]
+  );
+  if (!upd || !upd.affectedRows) {
+    await db.query("DELETE FROM render_jobs WHERE id = ? AND status = 'queued'", [job.insertId]);
+    return false;
+  }
+  await db.query(
+    "UPDATE publish_queue SET status = 'dropped', error = 'new sounds for this montage - a new cut is on its way' WHERE prep_media_id = ? AND status IN ('pending_review','failed')",
+    [row.media_id]
+  );
+  note('montage #' + row.media_id + ': new sounds (' + daypart + ') - music "' + track.title + '"' + (ig ? ', Instagram "' + (ig.title || ig.audio_id) + '"' : '') + ' - cut again');
+  return true;
+}
+
+// One time (owner 2026-11-15: "the same sound is being used for all of them"):
+// montages made before music by time of day that still wait for review get
+// new sounds. Approved ones stay exactly as the owner approved them. The flag
+// is set once none is left to do (one still rendering waits for its turn).
+async function resoundOldOnce(cfg) {
+  if (!montageOn(cfg)) return;
+  const flag = await db.query("SELECT cfg_value FROM branding WHERE cfg_key = 'montage_resound_dayparts'");
+  if (flag === null || (flag.length && flag[0].cfg_value === 'done')) return;
+  const old = " FROM media_prep p JOIN media m ON m.id = p.media_id WHERE m.kind = 'montage' AND p.copy_json NOT LIKE '%\"daypart\"%'" +
+    " AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.prep_media_id = p.media_id" +
+    " AND q.status IN ('approved_publishing','publishing','published','unknown','in_drafts'))";
+  const rows = await db.query('SELECT p.media_id, p.copy_json' + old + " AND p.status = 'staged' ORDER BY p.media_id ASC");
+  if (rows === null) return;
+  let done = 0;
+  for (const r of rows) if (await resound(r, cfg)) done++;
+  if (done) note(done + ' waiting montage(s) got new sounds (music by time of day) - same clips and text, cut again');
+  const left = await db.query('SELECT COUNT(*) AS n' + old + " AND p.status IN ('rendering','staged')");
+  if (left && left.length && Number(left[0].n) === 0) {
+    await db.query("INSERT INTO branding (cfg_key, cfg_value) VALUES ('montage_resound_dayparts', 'done') ON DUPLICATE KEY UPDATE cfg_value = 'done'");
+  }
 }
 
 // A montage's render failed: one more try with the same plan, then the clips
@@ -642,7 +761,7 @@ async function counts(cfg) {
 
 module.exports = {
   montageOn, clipMaxSeconds, analysedSeconds, isClip, MONTAGE_ERA,
-  planNext, release, dissolve, isMontage, onRenderFailed, sweep, counts,
+  planNext, release, dissolve, isMontage, onRenderFailed, sweep, counts, resoundOldOnce,
   MIN_CLIPS, MAX_CLIPS,
   _cleanPlan: cleanPlan, // tests
   _beatUnit: beatUnit // tests
