@@ -95,14 +95,18 @@ async function next() {
   return last && last.length && parse(last[0].copy_json).daypart === 'morning' ? 'evening' : 'morning';
 }
 
-// Instagram tracks the latest posts carry (and videos being made right now).
+// Instagram tracks the latest posts carry, every post waiting for review, and
+// videos being made right now - no two videos in the queue share a track.
 async function recentIgTracks(count) {
   const ids = new Set();
   const q = await db.query(
     "SELECT post_options FROM publish_queue WHERE platform = 'instagram' AND post_options LIKE '%audio_id%' AND status <> 'dropped'" +
     ' ORDER BY id DESC LIMIT ' + Math.max(1, Math.floor(count))
   );
-  for (const r of q || []) {
+  const waiting = await db.query(
+    "SELECT post_options FROM publish_queue WHERE platform = 'instagram' AND post_options LIKE '%audio_id%' AND status = 'pending_review'"
+  );
+  for (const r of (q || []).concat(waiting || [])) {
     const a = parse(r.post_options).ig_audio;
     if (a && a.audio_id) ids.add(String(a.audio_id));
   }
@@ -134,13 +138,20 @@ async function igTracks(daypart) {
   }));
 }
 
-// Sound Library tracks the latest videos were cut to - the next video gets another.
+// Sound Library tracks the next video must not use: the ones the latest videos
+// were cut to, and every track of a video being made or waiting for review -
+// no two videos in the queue share a track (2026-11-15: two montages of one
+// batch got the same track when their times tied to the second).
 async function recentMusic(count) {
-  const r = await db.query(
+  const last = await db.query(
     "SELECT sound_media_id FROM media_prep WHERE sound_media_id IS NOT NULL AND status NOT IN ('failed','skipped')" +
-    ' ORDER BY updated_at DESC LIMIT ' + Math.max(1, Math.floor(count))
+    ' ORDER BY updated_at DESC, media_id DESC LIMIT ' + Math.max(1, Math.floor(count))
   );
-  return new Set((r || []).map((x) => Number(x.sound_media_id)));
+  const waiting = await db.query(
+    "SELECT p.sound_media_id FROM media_prep p WHERE p.sound_media_id IS NOT NULL AND (p.status IN ('writing','rendering')" +
+    " OR (p.status = 'staged' AND EXISTS (SELECT 1 FROM publish_queue q WHERE q.prep_media_id = p.media_id AND q.status = 'pending_review')))"
+  );
+  return new Set((last || []).concat(waiting || []).map((x) => Number(x.sound_media_id)));
 }
 
 module.exports = {

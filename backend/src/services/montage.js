@@ -618,7 +618,7 @@ async function resound(row, cfg) {
   const moments = m.clips.map((c) => ({ clip_id: String(c.id), start: Number(c.from), end: Number(c.to) }));
   const plan = cleanPlan(clips, moments, track);
   if (!plan) return false;
-  const daypart = await dayparts.next();
+  const daypart = dayparts.valid(copy.daypart) || await dayparts.next();
   const ig = (await dayparts.igTracks(daypart))[0] || null;
 
   copy.daypart = daypart;
@@ -671,7 +671,8 @@ async function resoundOldOnce(cfg) {
   const old = " FROM media_prep p JOIN media m ON m.id = p.media_id WHERE m.kind = 'montage' AND p.copy_json NOT LIKE '%\"daypart\"%'" +
     " AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.prep_media_id = p.media_id" +
     " AND q.status IN ('approved_publishing','publishing','published','unknown','in_drafts'))";
-  const rows = await db.query('SELECT p.media_id, p.copy_json' + old + " AND p.status = 'staged' ORDER BY p.media_id ASC");
+  const rows = await db.query('SELECT p.media_id, p.copy_json' + old + " AND p.status = 'staged'" +
+    " AND EXISTS (SELECT 1 FROM publish_queue w WHERE w.prep_media_id = p.media_id AND w.status = 'pending_review') ORDER BY p.media_id ASC");
   if (rows === null) return;
   let done = 0;
   for (const r of rows) if (await resound(r, cfg)) done++;
@@ -679,6 +680,35 @@ async function resoundOldOnce(cfg) {
   const left = await db.query('SELECT COUNT(*) AS n' + old + " AND p.status IN ('rendering','staged')");
   if (left && left.length && Number(left[0].n) === 0) {
     await db.query("INSERT INTO branding (cfg_key, cfg_value) VALUES ('montage_resound_dayparts', 'done') ON DUPLICATE KEY UPDATE cfg_value = 'done'");
+  }
+}
+
+// One time (2026-11-15): two montages of one batch got the same Sound Library
+// track (their times tied to the second before recentMusic looked at the whole
+// queue). Of waiting montages that share a track the older keeps it, the newer
+// gets new sounds (same cut, same part of the day). One still rendering waits.
+async function dedupeMusicOnce(cfg) {
+  if (!montageOn(cfg)) return;
+  const flag = await db.query("SELECT cfg_value FROM branding WHERE cfg_key = 'montage_dedupe_music'");
+  if (flag === null || (flag.length && flag[0].cfg_value === 'done')) return;
+  const rows = await db.query(
+    "SELECT p.media_id, p.status, p.sound_media_id, p.copy_json FROM media_prep p JOIN media m ON m.id = p.media_id" +
+    " WHERE m.kind = 'montage' AND p.sound_media_id IS NOT NULL AND (p.status = 'rendering' OR (p.status = 'staged'" +
+    " AND EXISTS (SELECT 1 FROM publish_queue w WHERE w.prep_media_id = p.media_id AND w.status = 'pending_review')))" +
+    " AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.prep_media_id = p.media_id" +
+    " AND q.status IN ('approved_publishing','publishing','published','unknown','in_drafts'))" +
+    ' ORDER BY p.media_id ASC'
+  );
+  if (rows === null) return;
+  const seen = new Set();
+  let pending = 0;
+  for (const r of rows) {
+    const sid = Number(r.sound_media_id);
+    if (!seen.has(sid)) { seen.add(sid); continue; }
+    if (r.status !== 'staged' || !(await resound(r, cfg))) pending++;
+  }
+  if (!pending) {
+    await db.query("INSERT INTO branding (cfg_key, cfg_value) VALUES ('montage_dedupe_music', 'done') ON DUPLICATE KEY UPDATE cfg_value = 'done'");
   }
 }
 
@@ -761,7 +791,7 @@ async function counts(cfg) {
 
 module.exports = {
   montageOn, clipMaxSeconds, analysedSeconds, isClip, MONTAGE_ERA,
-  planNext, release, dissolve, isMontage, onRenderFailed, sweep, counts, resoundOldOnce,
+  planNext, release, dissolve, isMontage, onRenderFailed, sweep, counts, resoundOldOnce, dedupeMusicOnce,
   MIN_CLIPS, MAX_CLIPS,
   _cleanPlan: cleanPlan, // tests
   _beatUnit: beatUnit // tests

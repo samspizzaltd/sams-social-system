@@ -1109,6 +1109,7 @@ async function tick() {
     await clipSoundsOffOnce();
     await montage.sweep(await brandConfig.get());
     await montage.resoundOldOnce(await brandConfig.get()); // one time: new sounds for waiting montages (2026-11-15)
+    await montage.dedupeMusicOnce(await brandConfig.get()); // one time: waiting montages sharing a track (2026-11-15)
     await queueNewVideos();
     await writeNext();
     await montage.planNext({ preparingCount });
