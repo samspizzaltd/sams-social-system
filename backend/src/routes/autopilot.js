@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../database/db');
 const autopilot = require('../services/autopilot');
 const scheduler = require('../services/scheduler');
+const montage = require('../services/montage');
 
 // Master switch + autopilot status for the dashboard, and the owner's
 // per-video controls. All JWT-protected (mounted under /api).
@@ -53,6 +54,16 @@ router.post('/prep/:mediaId/again', async (req, res) => {
     return res.status(400).json({ error: 'sound must be "own" or "rotate"' });
   }
   const r = await autopilot.prepareAgain(id, sound);
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  res.json(r.body);
+});
+
+// POST /api/prep/:mediaId/new-sounds - a montage gets new music and a new
+// Instagram track (same cut and text) and comes back for review (montage.js).
+router.post('/prep/:mediaId/new-sounds', async (req, res) => {
+  const id = Number(req.params.mediaId);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid video id' });
+  const r = await montage.newSounds(id);
   if (r.error) return res.status(r.status).json({ error: r.error });
   res.json(r.body);
 });

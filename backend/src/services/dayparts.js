@@ -97,14 +97,16 @@ async function next() {
 
 // Instagram tracks the latest posts carry, every post waiting for review, and
 // videos being made right now - no two videos in the queue share a track.
-async function recentIgTracks(count) {
+// upcoming: also every approved Instagram post that is not out yet.
+async function recentIgTracks(count, upcoming) {
   const ids = new Set();
   const q = await db.query(
     "SELECT post_options FROM publish_queue WHERE platform = 'instagram' AND post_options LIKE '%audio_id%' AND status <> 'dropped'" +
     ' ORDER BY id DESC LIMIT ' + Math.max(1, Math.floor(count))
   );
   const waiting = await db.query(
-    "SELECT post_options FROM publish_queue WHERE platform = 'instagram' AND post_options LIKE '%audio_id%' AND status = 'pending_review'"
+    "SELECT post_options FROM publish_queue WHERE platform = 'instagram' AND post_options LIKE '%audio_id%' AND status IN (" +
+    (upcoming ? "'pending_review','approved_publishing'" : "'pending_review'") + ')'
   );
   for (const r of (q || []).concat(waiting || [])) {
     const a = parse(r.post_options).ig_audio;
@@ -127,9 +129,12 @@ async function igTracks(daypart) {
   let list = valid(daypart) === 'morning'
     ? all.filter(isFairouz)
     : all.filter((t) => t.source === 'trending' && !isFairouz(t));
-  const recent = await recentIgTracks(4);
-  const fresh = list.filter((t) => !recent.has(String(t.audio_id)));
-  if (fresh.length) list = fresh;
+  // first none that an upcoming post already carries, else none waiting for review
+  for (const upcoming of [true, false]) {
+    const busy = await recentIgTracks(4, upcoming);
+    const fresh = list.filter((t) => !busy.has(String(t.audio_id)));
+    if (fresh.length) { list = fresh; break; }
+  }
   // stable sort: among equally used tracks the trend order stays
   list = list.slice().sort((a, b) => (Number(a.uses) || 0) - (Number(b.uses) || 0));
   return list.slice(0, 12).map((t) => ({
@@ -139,17 +144,19 @@ async function igTracks(daypart) {
 }
 
 // Sound Library tracks the next video must not use: the ones the latest videos
-// were cut to, and every track of a video being made or waiting for review -
-// no two videos in the queue share a track (2026-11-15: two montages of one
-// batch got the same track when their times tied to the second).
+// were cut to, every track of a video being made or waiting for review, and the
+// tracks of montages approved but not out yet - no two upcoming videos share a
+// track (2026-11-15: two montages of one batch got the same track when their
+// times tied to the second).
 async function recentMusic(count) {
   const last = await db.query(
     "SELECT sound_media_id FROM media_prep WHERE sound_media_id IS NOT NULL AND status NOT IN ('failed','skipped')" +
     ' ORDER BY updated_at DESC, media_id DESC LIMIT ' + Math.max(1, Math.floor(count))
   );
   const waiting = await db.query(
-    "SELECT p.sound_media_id FROM media_prep p WHERE p.sound_media_id IS NOT NULL AND (p.status IN ('writing','rendering')" +
-    " OR (p.status = 'staged' AND EXISTS (SELECT 1 FROM publish_queue q WHERE q.prep_media_id = p.media_id AND q.status = 'pending_review')))"
+    "SELECT p.sound_media_id FROM media_prep p JOIN media m ON m.id = p.media_id WHERE p.sound_media_id IS NOT NULL" +
+    " AND (p.status IN ('writing','rendering') OR (p.status = 'staged' AND EXISTS (SELECT 1 FROM publish_queue q" +
+    " WHERE q.prep_media_id = p.media_id AND (q.status = 'pending_review' OR (m.kind = 'montage' AND q.status = 'approved_publishing')))))"
   );
   return new Set((last || []).concat(waiting || []).map((x) => Number(x.sound_media_id)));
 }

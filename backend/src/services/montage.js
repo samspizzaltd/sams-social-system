@@ -683,6 +683,35 @@ async function resoundOldOnce(cfg) {
   }
 }
 
+// The owner asks for new sounds on one montage (POST /api/prep/:id/new-sounds),
+// also one he already approved: another Sound Library track and the Instagram
+// track of its part of the day, same clips, cut and text. Its posts that are
+// not out yet are withdrawn; the new cut comes back to his review queue (a
+// platform where it is already out gets no second copy). Refused while one of
+// its posts is being published.
+async function newSounds(montageId) {
+  const rows = await db.query(
+    "SELECT p.media_id, p.status, p.copy_json FROM media_prep p JOIN media m ON m.id = p.media_id WHERE p.media_id = ? AND m.kind = 'montage'",
+    [montageId]
+  );
+  if (rows === null) return { status: 503, error: 'Database unavailable' };
+  if (!rows.length) return { status: 404, error: 'Not a montage' };
+  if (rows[0].status !== 'staged') return { status: 409, error: 'This montage is being made right now - try again when it is ready' };
+  const busy = await db.query(
+    "SELECT COUNT(*) AS n FROM publish_queue WHERE prep_media_id = ? AND (status = 'publishing' OR (status = 'approved_publishing' AND creation_id IS NOT NULL))",
+    [montageId]
+  );
+  if (!busy || Number(busy[0].n) > 0) return { status: 409, error: 'A post of this montage is being published right now - try again in a few minutes' };
+  const ok = await resound(rows[0], await brandConfig.get());
+  if (!ok) return { status: 409, error: 'No other music fits this montage right now' };
+  await db.query(
+    "UPDATE publish_queue SET status = 'dropped', error = 'new sounds for this montage - a new cut is on its way'" +
+    " WHERE prep_media_id = ? AND status = 'approved_publishing' AND creation_id IS NULL",
+    [montageId]
+  );
+  return { status: 200, body: { ok: true, status: 'rendering' } };
+}
+
 // One time (2026-11-15): two montages of one batch got the same Sound Library
 // track (their times tied to the second before recentMusic looked at the whole
 // queue). Of waiting montages that share a track the older keeps it, the newer
@@ -791,7 +820,7 @@ async function counts(cfg) {
 
 module.exports = {
   montageOn, clipMaxSeconds, analysedSeconds, isClip, MONTAGE_ERA,
-  planNext, release, dissolve, isMontage, onRenderFailed, sweep, counts, resoundOldOnce, dedupeMusicOnce,
+  planNext, release, dissolve, isMontage, onRenderFailed, sweep, counts, resoundOldOnce, dedupeMusicOnce, newSounds,
   MIN_CLIPS, MAX_CLIPS,
   _cleanPlan: cleanPlan, // tests
   _beatUnit: beatUnit // tests
