@@ -118,7 +118,7 @@ function framesOf(mediaId) {
 // 2026-11-15: not the same track on every montage - the tracks the latest
 // videos were cut to are left out (while others remain), least used first.
 // minSeconds: only tracks at least this long (a new sound for a finished cut).
-async function musicOptions(minSeconds) {
+async function musicOptions(minSeconds, raw) {
   const rows = await db.query(
     "SELECT m.id, m.title, m.ai_facts, m.ai_tags," +
     " (SELECT COUNT(*) FROM media_prep p WHERE p.sound_media_id = m.id AND p.status NOT IN ('failed','skipped')) AS uses" +
@@ -150,6 +150,7 @@ async function musicOptions(minSeconds) {
       avg_views: p && p.avg_views != null ? Number(p.avg_views) : null
     });
   }
+  if (raw) return out;
   let list = minSeconds ? out.filter((m) => m.seconds >= minSeconds) : out;
   if (!list.length) list = out;
   const recent = await dayparts.recentMusic(3);
@@ -589,12 +590,40 @@ function renderParams(montageId, plan, clipInfo, copy, music, title) {
   };
 }
 
+// Tracks of videos being made, waiting for review or approved but not out yet
+// (montagesOnly: of montages only).
+async function tracksInUse(montagesOnly) {
+  const r = await db.query(
+    "SELECT p.sound_media_id FROM media_prep p JOIN media m ON m.id = p.media_id WHERE p.sound_media_id IS NOT NULL" +
+    (montagesOnly ? " AND m.kind = 'montage'" : '') +
+    " AND (p.status IN ('writing','rendering') OR (p.status = 'staged' AND EXISTS (SELECT 1 FROM publish_queue q" +
+    " WHERE q.prep_media_id = p.media_id AND q.status IN ('pending_review','approved_publishing'))))"
+  );
+  return new Set((r || []).map((x) => Number(x.sound_media_id)));
+}
+
+// The liveliest upbeat track long enough for a cut (owner 2026-11-15: "give
+// the falafel an upbeat track instead"): first one no upcoming video uses, then
+// one no upcoming montage uses (a single edit may share it). Never avoidId.
+async function upbeatTrack(minSeconds, avoidId) {
+  const pool = (await musicOptions(0, true)).filter((m) => m.energy === 'upbeat' && m.seconds >= minSeconds && m.id !== avoidId);
+  for (const montagesOnly of [false, true]) {
+    const used = await tracksInUse(montagesOnly);
+    const free = pool.filter((m) => !used.has(m.id));
+    if (free.length) return free.sort((a, b) => b.beat_strength - a.beat_strength || a.uses - b.uses)[0];
+  }
+  return null;
+}
+
 // New sounds for a finished montage that still waits for review: another
 // Sound Library track for the video (not the one it had, not one the latest
 // videos used, long enough for the cut) and the Instagram track of its part of
 // the day. Same clips, same moments (re-snapped to the new beat), same hook and
 // captions. Its waiting posts give way to the new cut. Returns true when queued.
-async function resound(row, cfg) {
+// opts.upbeat: only the music changes, to an upbeat track (upbeatTrack); the
+// Instagram track and the part of the day stay.
+async function resound(row, cfg, opts) {
+  const only = !!(opts && opts.upbeat);
   const copy = parseJson(row.copy_json, {}) || {};
   const m = copy.montage;
   if (!m || !Array.isArray(m.clips) || m.clips.length < 3) return false;
@@ -611,20 +640,22 @@ async function resound(row, cfg) {
   // the cut was made for upbeat music: the liveliest track among the least used
   // ones that are not recent (musicOptions) and long enough
   const energy = { upbeat: 2, medium: 1 };
-  const track = (await musicOptions(length ? length + 0.2 : 0))
-    .sort((a, b) => (energy[b.energy] || 0) - (energy[a.energy] || 0) || b.beat_strength - a.beat_strength || a.uses - b.uses)
-    .find((x) => x.id !== oldMusic) || null;
+  const track = only
+    ? await upbeatTrack(length ? length + 0.2 : 0, oldMusic)
+    : (await musicOptions(length ? length + 0.2 : 0))
+      .sort((a, b) => (energy[b.energy] || 0) - (energy[a.energy] || 0) || b.beat_strength - a.beat_strength || a.uses - b.uses)
+      .find((x) => x.id !== oldMusic) || null;
   if (!track) return false;
   const moments = m.clips.map((c) => ({ clip_id: String(c.id), start: Number(c.from), end: Number(c.to) }));
   const plan = cleanPlan(clips, moments, track);
   if (!plan) return false;
   const daypart = dayparts.valid(copy.daypart) || await dayparts.next();
-  const ig = (await dayparts.igTracks(daypart))[0] || null;
+  const ig = only ? copy.ig_audio || null : (await dayparts.igTracks(daypart))[0] || null;
 
   copy.daypart = daypart;
   if (ig) copy.ig_audio = { audio_id: ig.audio_id, title: ig.title, artist: ig.artist, audio_type: ig.audio_type };
   else delete copy.ig_audio;
-  copy.sound_reason = [dayparts.label(daypart, cfg.publish_slots), 'New music for this cut: "' + track.title + '".'].join(' ');
+  copy.sound_reason = [dayparts.label(daypart, cfg.publish_slots), 'New ' + (only ? 'upbeat ' : '') + 'music for this cut: "' + track.title + '".'].join(' ');
   const titleOf = new Map(m.clips.map((c) => [Number(c.id), c.title || '']));
   copy.montage = Object.assign({}, m, {
     clips: plan.segments.map((s) => ({ id: s.media_id, title: titleOf.get(s.media_id) || '', from: s.from, to: s.to })),
@@ -689,7 +720,7 @@ async function resoundOldOnce(cfg) {
 // not out yet are withdrawn; the new cut comes back to his review queue (a
 // platform where it is already out gets no second copy). Refused while one of
 // its posts is being published.
-async function newSounds(montageId) {
+async function newSounds(montageId, opts) {
   const rows = await db.query(
     "SELECT p.media_id, p.status, p.copy_json FROM media_prep p JOIN media m ON m.id = p.media_id WHERE p.media_id = ? AND m.kind = 'montage'",
     [montageId]
@@ -702,8 +733,8 @@ async function newSounds(montageId) {
     [montageId]
   );
   if (!busy || Number(busy[0].n) > 0) return { status: 409, error: 'A post of this montage is being published right now - try again in a few minutes' };
-  const ok = await resound(rows[0], await brandConfig.get());
-  if (!ok) return { status: 409, error: 'No other music fits this montage right now' };
+  const ok = await resound(rows[0], await brandConfig.get(), opts);
+  if (!ok) return { status: 409, error: opts && opts.upbeat ? 'No upbeat track fits this montage right now' : 'No other music fits this montage right now' };
   await db.query(
     "UPDATE publish_queue SET status = 'dropped', error = 'new sounds for this montage - a new cut is on its way'" +
     " WHERE prep_media_id = ? AND status = 'approved_publishing' AND creation_id IS NULL",

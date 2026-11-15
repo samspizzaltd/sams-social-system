@@ -60,10 +60,13 @@ router.post('/prep/:mediaId/again', async (req, res) => {
 
 // POST /api/prep/:mediaId/new-sounds - a montage gets new music and a new
 // Instagram track (same cut and text) and comes back for review (montage.js).
+// {music: 'upbeat'}: only the music changes, to an upbeat track.
 router.post('/prep/:mediaId/new-sounds', async (req, res) => {
   const id = Number(req.params.mediaId);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid video id' });
-  const r = await montage.newSounds(id);
+  const music = req.body && req.body.music;
+  if (music !== undefined && music !== 'upbeat') return res.status(400).json({ error: 'music must be "upbeat" (or left out)' });
+  const r = await montage.newSounds(id, { upbeat: music === 'upbeat' });
   if (r.error) return res.status(r.status).json({ error: r.error });
   res.json(r.body);
 });
