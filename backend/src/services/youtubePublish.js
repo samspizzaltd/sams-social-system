@@ -243,6 +243,56 @@ async function stats(videoIds) {
   return out;
 }
 
+// The channel's own uploads with their view counts (harvest.js, owner
+// 2026-11-16: "add YouTube to the places where harvesting can happen").
+// YouTube's API gives no video file, so these are only listed for the owner;
+// nothing from here is stored (Google's 30-day data rule). ~8 quota units.
+async function listUploads(maxItems) {
+  const acc = await account();
+  if (!acc) return { ok: false, error: 'YouTube not connected', videos: [] };
+  const headers = { Authorization: 'Bearer ' + acc.access_token };
+  const read = async (url) => {
+    const r = await fetch(url, { headers, signal: AbortSignal.timeout(20 * 1000) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) throw new Error((j.error && j.error.message) || 'HTTP ' + r.status);
+    return j;
+  };
+  const max = maxItems || 150;
+  try {
+    const ch = await read(API + '/channels?part=contentDetails&mine=true');
+    const c = ch.items && ch.items[0];
+    const uploads = c && c.contentDetails && c.contentDetails.relatedPlaylists && c.contentDetails.relatedPlaylists.uploads;
+    if (!uploads) return { ok: true, videos: [] };
+    const ids = [];
+    let pageToken = '';
+    for (let page = 0; page < 4 && ids.length < max; page++) {
+      const j = await read(API + '/playlistItems?part=contentDetails&maxResults=50&playlistId=' + encodeURIComponent(uploads) +
+        (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''));
+      for (const it of j.items || []) if (it.contentDetails && it.contentDetails.videoId) ids.push(it.contentDetails.videoId);
+      pageToken = j.nextPageToken || '';
+      if (!pageToken) break;
+    }
+    const videos = [];
+    for (let i = 0; i < Math.min(ids.length, max); i += 50) {
+      const j = await read(API + '/videos?part=statistics,snippet&id=' + ids.slice(i, Math.min(i + 50, max)).join(','));
+      for (const it of j.items || []) {
+        const sn = it.snippet || {};
+        const th = sn.thumbnails || {};
+        videos.push({
+          id: it.id,
+          title: sn.title || '',
+          views: Number((it.statistics && it.statistics.viewCount) || 0),
+          published_at: sn.publishedAt || null,
+          thumbnail: (th.medium || th.default || {}).url || null
+        });
+      }
+    }
+    return { ok: true, videos };
+  } catch (err) {
+    return { ok: false, error: err.message, videos: [] };
+  }
+}
+
 const PRIVACY = ['private', 'unlisted', 'public'];
 
 function cleanTitle(s) {
@@ -426,6 +476,6 @@ async function tryFinish(sessionUrl, filename) {
 }
 
 module.exports = {
-  account, appAudited, channelInfo, stats, startPost, tryFinish, dailyCheck, revokeAndDelete, PRIVACY,
+  account, appAudited, channelInfo, stats, listUploads, startPost, tryFinish, dailyCheck, revokeAndDelete, PRIVACY,
   _resetDailyCheck: () => { lastDailyCheck = 0; } // tests only
 };

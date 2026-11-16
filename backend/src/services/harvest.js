@@ -5,10 +5,21 @@ const { pipeline } = require('stream/promises');
 const { Readable, Transform } = require('stream');
 const db = require('../database/db');
 const metaPublish = require('./metaPublish');
+const tiktokBusiness = require('./tiktokBusiness');
+const youtubePublish = require('./youtubePublish');
 
 // Harvest the account's own best-performing videos (>= minViews) from
 // Instagram and the Facebook Page, download them into the media library and
-// stage them in the publish review queue as pending_review. NOTHING here
+// stage them in the publish review queue as pending_review.
+// TikTok and YouTube are scanned too (owner 2026-11-16: "add YouTube and
+// TikTok to the places where harvesting can happen"), but neither hands a
+// video file to apps - TikTok's business interface gives the post link,
+// YouTube's API has no download at all - and taking the file any other way
+// breaks their rules (and could cost the connections). Their top videos are
+// LISTED for the owner (state.manual) with the link; he saves the file
+// (YouTube Studio -> Download; for TikTok best the original from his phone,
+// as TikTok's own download adds its logo) and uploads it next to the item,
+// which stages it like the others (stageUpload). NOTHING here
 // publishes - every staged row still waits for the owner's Approve tap
 // (owner rule 2026-10-12). Owner request 2026-10-13: until new footage
 // arrives, re-use the existing 5K+ view posts.
@@ -28,6 +39,11 @@ const state = {
   downloadedBytes: 0,
   log: [],
   skipped: [],
+  // TikTok / YouTube top videos the owner saves and uploads himself
+  manual: [],
+  // check only (dry_run): nothing downloaded or staged, the Instagram/Facebook finds are counted
+  dryRun: false,
+  wouldStage: 0,
   error: null
 };
 
@@ -38,7 +54,7 @@ function note(msg) {
 }
 
 function status() {
-  return { ...state, log: state.log.slice(-30), skipped: state.skipped.slice(-30) };
+  return { ...state, log: state.log.slice(-30), skipped: state.skipped.slice(-30), manual: state.manual.slice(0, 25) };
 }
 
 async function alreadyHarvested(platform, platformMediaId) {
@@ -178,6 +194,81 @@ async function fbCandidates(minViews) {
   return out;
 }
 
+// ---------- TikTok + YouTube: found here, file from the owner ----------
+
+function cleanLink(url) {
+  const u = String(url || '').split('?')[0];
+  return /^https:\/\/(www\.)?(tiktok\.com|youtube\.com|youtu\.be)\//.test(u) ? u : null;
+}
+
+async function ttCandidates(minViews) {
+  if (!(await tiktokBusiness.account())) { note('TikTok (business) not connected - skipping'); return []; }
+  const r = await tiktokBusiness.listVideos(8);
+  if (!r.ok) {
+    state.viewLookupFailures++;
+    note('TikTok: could not read all videos - ' + r.error);
+  }
+  const out = [];
+  for (const v of r.videos || []) {
+    state.scanned++;
+    const views = Number(v.video_views);
+    if (!Number.isFinite(views)) { state.viewLookupFailures++; continue; }
+    if (views < minViews || !v.item_id) continue;
+    out.push({
+      platform: 'tiktok',
+      id: String(v.item_id),
+      views,
+      downloadUrl: null, // TikTok gives no file to apps
+      caption: v.caption || '',
+      title: String(v.caption || '').split('\n')[0],
+      permalink: cleanLink(v.share_url),
+      thumbnail: v.thumbnail_url || null,
+      timestamp: v.create_time ? new Date(Number(v.create_time) * 1000).toISOString() : null
+    });
+  }
+  return out;
+}
+
+async function ytCandidates(minViews) {
+  if (!(await youtubePublish.account())) { note('YouTube not connected - skipping'); return []; }
+  const r = await youtubePublish.listUploads(150);
+  if (!r.ok) {
+    state.viewLookupFailures++;
+    note('YouTube: could not read the uploads - ' + r.error);
+  }
+  const out = [];
+  for (const v of r.videos || []) {
+    state.scanned++;
+    if (v.views < minViews) continue;
+    out.push({
+      platform: 'youtube',
+      id: v.id,
+      views: v.views,
+      downloadUrl: null, // YouTube's API has no download
+      caption: '', // YouTube text is not kept (Google's 30-day data rule)
+      title: v.title || '',
+      permalink: 'https://www.youtube.com/shorts/' + v.id,
+      thumbnail: v.thumbnail || null,
+      timestamp: v.published_at || null
+    });
+  }
+  return out;
+}
+
+// Caption keys of videos harvested in earlier runs (title "Repost 12K views -
+// <first caption line>", or its name before Analyze & name renamed it), so a
+// TikTok copy of an Instagram reel harvested last week is not listed again.
+async function harvestedCaptionKeys() {
+  const rows = await db.query("SELECT title, original_title FROM media WHERE note LIKE 'harvest:%' LIMIT 2000");
+  const keys = new Set();
+  for (const r of rows || []) {
+    const t = String(r.original_title || r.title || '');
+    const k = captionKey(t.replace(/^Repost[^-]*-\s*/, ''));
+    if (k) keys.add(k);
+  }
+  return keys;
+}
+
 // Stream the CDN file to disk with a hard byte cap (shared hosting - never
 // buffer a whole video in memory, never let a runaway download fill the disk).
 async function downloadVideo(url) {
@@ -240,7 +331,7 @@ async function sweepOrphanFiles() {
   }
 }
 
-const CAPTION_LIMIT = { instagram: 2200, facebook_page: 5000 };
+const CAPTION_LIMIT = { instagram: 2200, facebook_page: 5000, tiktok: 2200, youtube: 5000 };
 
 async function stageCandidate(c) {
   if (await alreadyHarvested(c.platform, c.id)) {
@@ -281,22 +372,31 @@ async function stageCandidate(c) {
   note('staged ' + c.platform + ' ' + c.id + ' (' + c.views + ' views, ' + Math.round(dl.size / 1048576) + ' MB)');
 }
 
-async function runHarvest(minViews, limit) {
+async function runHarvest(minViews, limit, dryRun) {
   state.running = true;
   state.startedAt = new Date().toISOString();
   state.finishedAt = null;
   state.minViews = minViews;
+  state.dryRun = !!dryRun;
+  state.wouldStage = 0;
   state.scanned = 0;
   state.staged = 0;
   state.viewLookupFailures = 0;
   state.downloadedBytes = 0;
   state.log = [];
   state.skipped = [];
+  state.manual = [];
   state.error = null;
   try {
     await sweepOrphanFiles();
-    note('scanning Instagram + Facebook for videos with >= ' + minViews + ' views (most recent ~150 posts per platform)');
+    note('scanning Instagram, Facebook, TikTok and YouTube for videos with >= ' + minViews + ' views (most recent ~150 posts per platform)');
     const [ig, fb] = [await igCandidates(minViews), await fbCandidates(minViews)];
+    // One of these two failing must not stop the Instagram/Facebook harvest.
+    const quietly = async (fn, name) => {
+      try { return await fn(minViews); } catch (err) { state.viewLookupFailures++; note(name + ' scan failed: ' + err.message); return []; }
+    };
+    const tt = await quietly(ttCandidates, 'TikTok');
+    const yt = await quietly(ytCandidates, 'YouTube');
     // Leave out what was used before BEFORE taking the top N, so old library
     // videos and our own new posts do not use up the places (2026-11-11).
     const all = [];
@@ -312,15 +412,41 @@ async function runHarvest(minViews, limit) {
       if (key) captions.add(key);
       all.push(c);
     }
-    note('found ' + (ig.length + fb.length) + ' qualifying videos (IG ' + ig.length + ', FB ' + fb.length + '), taking ' + all.length + ' not used before');
+    // TikTok + YouTube: listed for the owner to save and upload (no file
+    // through their APIs) - not the ones this system posted, not a copy of an
+    // Instagram/Facebook video harvested now or earlier.
+    const earlier = await harvestedCaptionKeys();
+    for (const c of [...tt, ...yt].sort((a, b) => b.views - a.views)) {
+      if (state.manual.length >= limit) break;
+      if (await alreadyHarvested(c.platform, c.id)) { state.skipped.push(c.platform + ' ' + c.id + ': already harvested earlier'); continue; }
+      const used = await usedBefore(c);
+      if (used === null) throw new Error('database unavailable while checking ' + c.platform + ' ' + c.id);
+      if (used) { state.skipped.push(c.platform + ' ' + c.id + ' (' + c.views + ' views): ' + used); continue; }
+      const key = captionKey(c.caption);
+      if (key && (captions.has(key) || earlier.has(key))) { state.skipped.push(c.platform + ' ' + c.id + ': the same video as an Instagram/Facebook repost (same caption)'); continue; }
+      if (key) captions.add(key);
+      state.manual.push({
+        platform: c.platform, id: c.id, views: c.views, title: String(c.title || '').slice(0, 140),
+        permalink: c.permalink, thumbnail: c.thumbnail, timestamp: c.timestamp,
+        caption: String(c.caption || '').slice(0, CAPTION_LIMIT[c.platform])
+      });
+    }
+    note('found ' + (ig.length + fb.length + tt.length + yt.length) + ' qualifying videos (IG ' + ig.length + ', FB ' + fb.length +
+      ', TikTok ' + tt.length + ', YouTube ' + yt.length + '), taking ' + all.length + ' not used before; ' + state.manual.length +
+      ' TikTok/YouTube video(s) listed for you to save and upload');
     for (const c of all) {
+      if (dryRun) {
+        state.wouldStage++;
+        note('check only - would stage ' + c.platform + ' ' + c.id + ' (' + c.views + ' views)');
+        continue;
+      }
       try {
         await stageCandidate(c);
       } catch (err) {
         state.skipped.push(c.platform + ' ' + c.id + ': ' + err.message);
       }
     }
-    let doneMsg = 'done - ' + state.staged + ' staged for your review, ' + state.skipped.length + ' skipped';
+    let doneMsg = 'done' + (dryRun ? ' (check only) - ' + state.wouldStage + ' would be staged, ' : ' - ' + state.staged + ' staged for your review, ') + state.manual.length + ' to save from TikTok/YouTube, ' + state.skipped.length + ' skipped';
     if (state.viewLookupFailures > 0) {
       doneMsg += ' | WARNING: ' + state.viewLookupFailures + ' view lookups failed (token/permission/rate limit?) - real numbers may be higher';
     }
@@ -334,12 +460,55 @@ async function runHarvest(minViews, limit) {
   }
 }
 
+// The owner's saved copy of a TikTok / YouTube top video (multer already
+// wrote it to the media folder): into the library as a harvested repost and
+// staged for review on that platform - like a downloaded Instagram reel. The
+// autopilot then makes its edit for every platform. Returns {status, ...};
+// on an error the caller removes the file.
+const ID_OK = { tiktok: /^\d{5,30}$/, youtube: /^[A-Za-z0-9_-]{11}$/ };
+const DEFAULT_CAPTION = "Sam's - More Than Pizza 🍕";
+async function stageUpload(file, platform, id) {
+  platform = String(platform || '');
+  id = String(id || '');
+  if (!ID_OK[platform]) return { status: 400, error: 'platform must be tiktok or youtube' };
+  if (!ID_OK[platform].test(id)) return { status: 400, error: 'That is not a ' + platform + ' video id' };
+  if (!file || !/^video\//.test(String(file.mimetype || ''))) return { status: 400, error: 'Pick the saved video file (MP4 or MOV)' };
+  const before = await alreadyHarvested(platform, id);
+  if (before) return { status: 409, error: 'This ' + (platform === 'tiktok' ? 'TikTok' : 'YouTube') + ' video is in the library already' };
+  const item = state.manual.find((x) => x.platform === platform && x.id === id) || null;
+  const name = String(file.originalname || '').replace(/\.[A-Za-z0-9]{2,4}$/, '').slice(0, 120);
+  const k = item && item.views >= 1000 ? Math.round(item.views / 1000) + 'K' : item ? String(item.views) : '';
+  // YouTube: nothing from its API is kept (title, numbers) - the file name is his own.
+  const title = (platform === 'tiktok'
+    ? 'Repost ' + (k ? k + ' views ' : '') + '- ' + ((item && item.title) || name || 'TikTok video')
+    : 'Repost from YouTube - ' + (name || id)).slice(0, 255);
+  const noteText = ('harvest:' + platform + ':' + id + ' | ' + (platform === 'tiktok' && item ? item.views + ' views | ' : 'uploaded by you | ') +
+    (platform === 'tiktok' ? ((item && item.permalink) || '') : 'https://www.youtube.com/shorts/' + id)).slice(0, 500);
+  const media = await db.query(
+    'INSERT INTO media (kind, title, filename, url_path, size_bytes, note) VALUES (?,?,?,?,?,?)',
+    ['video', title, file.filename, '/media/' + file.filename, file.size, noteText]
+  );
+  if (media === null) return { status: 503, error: 'Database unavailable' };
+  const caption = platform === 'tiktok' && item && item.caption.trim() ? item.caption.slice(0, CAPTION_LIMIT.tiktok) : DEFAULT_CAPTION;
+  const q = await db.query(
+    'INSERT INTO publish_queue (platform, media_id, caption, status) VALUES (?,?,?,?)',
+    [platform, media.insertId, caption, 'pending_review']
+  );
+  if (q === null) {
+    await db.query('DELETE FROM media WHERE id = ?', [media.insertId]);
+    return { status: 503, error: 'Database unavailable' };
+  }
+  state.manual = state.manual.filter((x) => !(x.platform === platform && x.id === id));
+  note('staged ' + platform + ' ' + id + ' from your upload (library #' + media.insertId + ')');
+  return { status: 201, ok: true, media_id: media.insertId, queue_id: q.insertId };
+}
+
 // Fire-and-forget starter (the Apache proxy cuts requests at 60s, so the
 // HTTP route returns immediately and the panel polls status()).
-function start(minViews, limit) {
+function start(minViews, limit, dryRun) {
   if (state.running) return { ok: false, error: 'A harvest is already running' };
-  runHarvest(minViews, limit); // intentionally not awaited
+  runHarvest(minViews, limit, dryRun); // intentionally not awaited
   return { ok: true };
 }
 
-module.exports = { start, status, _usedBefore: usedBefore, _captionKey: captionKey };
+module.exports = { start, status, stageUpload, _usedBefore: usedBefore, _captionKey: captionKey, _state: state };

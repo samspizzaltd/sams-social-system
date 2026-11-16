@@ -509,6 +509,8 @@ export function PublishQueue() {
   // ----- harvest of the account's own top videos -----
   const [harvest, setHarvest] = useState(null);
   const harvestPollRef = useRef(null);
+  // TikTok / YouTube video whose saved file is being uploaded ("platform:id")
+  const [harvestUp, setHarvestUp] = useState(null);
 
   const pollHarvest = useCallback(() => {
     api.get('/api/harvest/status')
@@ -549,6 +551,30 @@ export function PublishQueue() {
       setError(err.response?.data?.error || err.message);
     }
     pollHarvest();
+  };
+
+  // TikTok and YouTube give no video file to apps (owner 2026-11-16: "add
+  // YouTube and TikTok to the places where harvesting can happen"): the
+  // harvest lists their top videos, the owner saves the file and uploads it
+  // here, and it is staged below like a harvested Instagram reel.
+  const uploadHarvested = async (item, file) => {
+    if (!file) return;
+    setError(null); setNotice(null);
+    setHarvestUp(item.platform + ':' + item.id);
+    try {
+      const form = new FormData();
+      form.append('platform', item.platform);
+      form.append('id', item.id);
+      form.append('file', file);
+      await api.post('/api/harvest/upload', form, { timeout: 180000 });
+      setNotice((item.platform === 'tiktok' ? 'TikTok' : 'YouTube') + ' video added to the library and staged below for your review. The autopilot also makes its edit of it for every platform.');
+      load();
+      pollHarvest();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    } finally {
+      setHarvestUp(null);
+    }
   };
 
   if (error && queue === null) return <ErrorBox error={error} />;
@@ -970,8 +996,10 @@ export function PublishQueue() {
       <div className="cp-card">
         <h3>Harvest your top posts</h3>
         <p className="cp-muted">
-          Pulls your own Instagram and Facebook videos with 5,000+ views into the media
-          library and stages them below as reposts. Nothing publishes without your Approve.
+          Finds your own videos with 5,000+ views on Instagram, Facebook, TikTok and YouTube.
+          Instagram and Facebook videos are pulled into the media library and staged below as reposts.
+          TikTok and YouTube do not hand the video file to apps, so their top videos are listed here:
+          save the file and upload it next to the video, and it is staged the same way. Nothing publishes without your Approve.
         </p>
         <button className="cp-btn" onClick={startHarvest} disabled={harvest && harvest.running}>
           {harvest && harvest.running ? 'Harvesting…' : 'Harvest 5K+ view videos'}
@@ -979,12 +1007,42 @@ export function PublishQueue() {
         {harvest && (
           <p className="cp-muted" style={{ marginTop: 8 }}>
             {harvest.running ? 'Running… ' : harvest.finishedAt ? 'Last run: ' : ''}
-            scanned {harvest.scanned} · staged {harvest.staged}
+            scanned {harvest.scanned} · {harvest.dryRun ? 'check only, ' + (harvest.wouldStage || 0) + ' Instagram/Facebook to stage on a real run' : 'staged ' + harvest.staged}
             {harvest.error ? ' · failed: ' + harvest.error : ''}
+            {harvest.manual && harvest.manual.length > 0 ? ' · ' + harvest.manual.length + ' to save from TikTok/YouTube' : ''}
             {!harvest.running && harvest.skipped && harvest.skipped.length > 0 && (
               <> · skipped {harvest.skipped.length}: {harvest.skipped.slice(-3).join('; ')}</>
             )}
           </p>
+        )}
+        {harvest && !harvest.running && harvest.manual && harvest.manual.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <strong>Save these from TikTok / YouTube, then upload them here</strong>
+            <p className="cp-muted" style={{ margin: '4px 0 8px' }}>
+              YouTube: YouTube Studio → Content → ⋮ next to the video → Download.
+              TikTok: best the original from your phone - TikTok's own download adds the TikTok logo, and Instagram shows videos with another app's logo to fewer people.
+            </p>
+            <ul className="cp-list">
+              {harvest.manual.map((m) => {
+                const key = m.platform + ':' + m.id;
+                const name = m.platform === 'tiktok' ? 'TikTok' : 'YouTube';
+                return (
+                  <li key={key} style={{ marginBottom: 8 }}>
+                    <strong>{name} · {Number(m.views).toLocaleString('en-US')} views</strong>
+                    {m.title ? ' · ' + m.title : ''}
+                    <div className="cp-content-actions" style={{ marginTop: 4 }}>
+                      {m.permalink && <a className="cp-btn small ghost" href={m.permalink} target="_blank" rel="noopener noreferrer">Open on {name}</a>}
+                      <label className={'cp-btn small' + (harvestUp ? ' disabled' : '')} style={{ cursor: harvestUp ? 'wait' : 'pointer' }}>
+                        {harvestUp === key ? 'Uploading…' : 'Upload the saved file'}
+                        <input type="file" accept="video/*" style={{ display: 'none' }} disabled={!!harvestUp}
+                          onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; uploadHarvested(m, f); }} />
+                      </label>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
       </div>
 

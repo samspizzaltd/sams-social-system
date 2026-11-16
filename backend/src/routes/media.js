@@ -285,4 +285,11 @@ router.delete('/render-jobs', async (req, res) => {
   res.json({ ok: true, deleted: del.affectedRows });
 });
 
-module.exports = { router, MEDIA_DIR };
+// The harvest's "upload the saved file" (routes/harvest.js) uses the same
+// upload rules and storage budget.
+async function budgetFull() {
+  const used = await db.query('SELECT COALESCE(SUM(size_bytes),0) AS used FROM media');
+  return !!(used && Number(used[0].used) > MEDIA_BUDGET_BYTES);
+}
+
+module.exports = { router, MEDIA_DIR, upload, budgetFull, MEDIA_BUDGET_BYTES };

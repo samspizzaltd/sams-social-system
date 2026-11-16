@@ -449,9 +449,33 @@ async function stats(postIds) {
   return { ok: true, posts: out, followers: p ? p.followers : null };
 }
 
+// Every video on the account, newest first, with its lifetime views
+// (harvest.js, owner 2026-11-16: "add TikTok to the places where harvesting
+// can happen"). This interface gives the post link, never the video file.
+async function listVideos(maxPages) {
+  const acc = await account();
+  if (!acc) return { ok: false, error: 'TikTok (business) is not connected', videos: [] };
+  const out = [];
+  let cursor = null;
+  for (let page = 0; page < (maxPages || 8); page++) {
+    const query = {
+      business_id: acc.open_id,
+      fields: ['item_id', 'create_time', 'caption', 'video_views', 'share_url', 'thumbnail_url', 'video_duration'],
+      max_count: 20
+    };
+    if (cursor) query.cursor = cursor;
+    const r = await call('GET', '/business/video/list/', { token: acc.access_token, query });
+    if (!r.ok) return { ok: false, error: r.error, videos: out };
+    out.push(...(r.data.videos || []));
+    if (!r.data.has_more || !r.data.cursor || r.data.cursor === cursor) break;
+    cursor = r.data.cursor;
+  }
+  return { ok: true, videos: out };
+}
+
 module.exports = {
   appCfg, configured, exchangeCode, saveConnection, account, disconnect, profile, creatorInfo,
-  verifyUrlPrefix, ready, status, isBizId, startPost, tryFinish, stats, readState, saveState, returnedReady,
+  verifyUrlPrefix, ready, status, isBizId, startPost, tryFinish, stats, listVideos, readState, saveState, returnedReady,
   URL_PREFIX, PLATFORM, ID_PREFIX,
   _state: state, // test harness
   _resetReturn: () => { returnDone = false; } // test harness
