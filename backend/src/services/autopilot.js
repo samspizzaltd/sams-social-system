@@ -36,7 +36,6 @@ const dayparts = require('./dayparts');
 const MEDIA_DIR = path.join(__dirname, '..', '..', '..', 'media');
 // Frames live OUTSIDE the public media folder - they are working files.
 const PREP_DIR = path.join(__dirname, '..', '..', '..', 'prep-frames');
-const TBILISI_OFFSET_MS = 4 * 3600 * 1000; // Georgia has no DST
 const CAPTION_LIMIT = { instagram: 2200, facebook_page: 5000, tiktok: 2200, youtube: 5000 };
 const PLATFORMS = ['instagram', 'facebook_page', 'tiktok', 'youtube'];
 const PLATFORM_SETTING = {
@@ -107,29 +106,25 @@ function workerSeen() {
 // parseSlots lives in dayparts.js (montage.js needs it too); re-exported below.
 const parseSlots = dayparts.parseSlots;
 
-// Next posting slot (epoch ms) on `platform` that no other approved,
-// publishing or published row already holds. One post per platform per slot.
-// daypart (dayparts.js): a video made for the morning takes only morning
-// slots, an afternoon/evening video only the later ones; null = any slot.
+// Next posting time (epoch ms) on `platform`: the earliest posting window
+// (publish_slots, dayparts.js) that no other approved, publishing or published
+// row of that platform holds that day, at the platform's own time inside the
+// window (Instagram first, then Facebook, TikTok, YouTube). One post per
+// platform per window. daypart (dayparts.js): a video made for the morning
+// takes only morning windows, an afternoon/evening video only the later ones;
+// null = any window.
 async function nextFreeSlot(platform, daypart) {
   const cfg = await brandConfig.get();
-  const slots = dayparts.slotsFor(parseSlots(cfg.publish_slots), daypart);
+  const windows = dayparts.parseWindows(cfg.publish_slots);
   const now = Date.now();
   const taken = await db.query(
     "SELECT scheduled_at FROM publish_queue WHERE platform = ? AND scheduled_at IS NOT NULL AND scheduled_at > ?" +
     " AND status IN ('approved_publishing','publishing','published','unknown','in_drafts')",
-    [platform, now - 3600 * 1000]
+    [platform, now - 86400 * 1000]
   );
-  const held = new Set((taken || []).map((r) => Number(r.scheduled_at)));
-  const tb = new Date(now + TBILISI_OFFSET_MS);
-  for (let d = 0; d < 90; d++) {
-    for (const minutes of slots) {
-      const t = Date.UTC(tb.getUTCFullYear(), tb.getUTCMonth(), tb.getUTCDate() + d, 0, minutes) - TBILISI_OFFSET_MS;
-      if (t <= now + 60 * 1000) continue;
-      if (!held.has(t)) return t;
-    }
-  }
-  return now; // 90 days fully booked - publish as soon as possible
+  const held = new Set((taken || []).map((r) => dayparts.windowKey(r.scheduled_at, windows)).filter(Boolean));
+  const t = dayparts.firstFreeTime(platform, windows, dayparts.slotsFor(windows, daypart), held, now + 60 * 1000);
+  return t === null ? now : t; // 90 days fully booked - publish as soon as possible
 }
 
 // ---------- step 1: queue analysis of new library videos ----------
@@ -1051,49 +1046,66 @@ async function clipSoundsOffOnce() {
   if (ids.length) note(ids.length + ' sounds taken from short clips left the sound circulation (kitchen noise - montages get music)');
 }
 
-// The owner changed the posting times (2026-11-15: the morning slot moved from
-// 12:30 to 10:00 "for everyday"): approved posts still booked on a time that
-// is no longer a slot move to the same day's slot of the same part of the day,
-// when that slot is still ahead and free on their platform. Otherwise they keep
-// their time (today's 12:30 posts after 10:00 has passed, for example). Rows
-// sent "now" (no time) and retries after an error are left alone.
-async function moveOffOldSlots() {
+// The owner changed the posting times (2026-11-15: the morning slot moved to
+// 10:00; 2026-11-16: "three posts daily", windows 09:30-10:00 / 12:45-13:00 /
+// 16:00-19:00). Once per publish_slots value, every approved post that is not
+// out yet is fitted onto the schedule: per platform, in the order they were
+// booked, each takes the earliest free window of its video's part of the day,
+// at that platform's time in the window. So new windows fill from the next one
+// on with the posts already approved. Nothing goes out later than it was
+// booked to: when the earliest free window would be later, a post keeps its
+// time if that time is inside a free window of its part of the day.
+// Left alone: posts due within 10 minutes, rows sent "now" (no time), uploads
+// under way (creation_id) and retries after an error.
+const FIT_LEAD_MS = 10 * 60 * 1000;
+
+async function fitToSchedule() {
   const cfg = await brandConfig.get();
-  const slots = parseSlots(cfg.publish_slots);
+  const windows = dayparts.parseWindows(cfg.publish_slots);
+  const key = windows.map(dayparts.windowLabel).join(', ');
+  const flag = await db.query("SELECT cfg_value FROM branding WHERE cfg_key = 'slots_fitted_for'");
+  if (flag === null || (flag.length && flag[0].cfg_value === key)) return 0;
   const now = Date.now();
-  const rows = await db.query(
-    "SELECT id, platform, scheduled_at FROM publish_queue WHERE status = 'approved_publishing' AND creation_id IS NULL AND error IS NULL" +
-    ' AND scheduled_at IS NOT NULL AND scheduled_at > ? ORDER BY scheduled_at ASC',
-    [now + 60 * 1000]
-  );
-  if (!rows || !rows.length) return 0;
-  const tbilisi = (t) => new Date(Number(t) + TBILISI_OFFSET_MS);
-  const minuteOf = (t) => tbilisi(t).getUTCHours() * 60 + tbilisi(t).getUTCMinutes();
+  const after = now + FIT_LEAD_MS;
   let moved = 0;
-  for (const r of rows) {
-    const t = Number(r.scheduled_at);
-    const old = minuteOf(t);
-    if (slots.includes(old)) continue;
-    const same = dayparts.slotsFor(slots, dayparts.partOfMinutes(old));
-    const target = same.slice().sort((a, b) => Math.abs(a - old) - Math.abs(b - old))[0];
-    const d = tbilisi(t);
-    const at = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, target) - TBILISI_OFFSET_MS;
-    if (at <= now + 60 * 1000) continue;
-    const busy = await db.query(
-      "SELECT id FROM publish_queue WHERE platform = ? AND scheduled_at = ? AND status IN ('approved_publishing','publishing','published','unknown','in_drafts') LIMIT 1",
-      [r.platform, at]
+  for (const platform of PLATFORMS) {
+    const rows = await db.query(
+      "SELECT id, scheduled_at, prep_media_id FROM publish_queue WHERE platform = ? AND status = 'approved_publishing'" +
+      ' AND creation_id IS NULL AND error IS NULL AND scheduled_at IS NOT NULL AND scheduled_at > ? ORDER BY scheduled_at ASC, id ASC',
+      [platform, after]
     );
-    if (!busy || busy.length) continue;
-    const u = await db.query(
-      "UPDATE publish_queue SET scheduled_at = ? WHERE id = ? AND status = 'approved_publishing' AND creation_id IS NULL AND scheduled_at = ?",
-      [at, r.id, t]
+    const others = await db.query(
+      "SELECT id, scheduled_at FROM publish_queue WHERE platform = ? AND scheduled_at IS NOT NULL AND scheduled_at > ?" +
+      " AND status IN ('approved_publishing','publishing','published','unknown','in_drafts')",
+      [platform, now - 86400 * 1000]
     );
-    if (u && u.affectedRows) moved++;
+    if (rows === null || others === null) return moved; // database trouble: the next tick tries again
+    const mine = new Set(rows.map((r) => Number(r.id)));
+    const held = new Set(others.filter((r) => !mine.has(Number(r.id))).map((r) => dayparts.windowKey(r.scheduled_at, windows)).filter(Boolean));
+    for (const r of rows) {
+      const old = Number(r.scheduled_at);
+      const allowed = dayparts.slotsFor(windows, await dayparts.forPrep(r.prep_media_id));
+      let t = dayparts.firstFreeTime(platform, windows, allowed, held, after);
+      if (t === null || t > old) {
+        const oldKey = dayparts.windowKey(old, windows);
+        const inFreeWindow = oldKey && !held.has(oldKey) && allowed.includes(windows[Number(oldKey.split('#')[1])]);
+        if (inFreeWindow || t === null) t = old;
+      }
+      held.add(dayparts.windowKey(t, windows));
+      if (t === old) continue;
+      const u = await db.query(
+        "UPDATE publish_queue SET scheduled_at = ? WHERE id = ? AND status = 'approved_publishing' AND creation_id IS NULL AND scheduled_at = ?",
+        [t, r.id, old]
+      );
+      if (u === null) return moved;
+      if (u.affectedRows) moved++;
+    }
   }
-  if (moved) {
-    const hhmm = (m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
-    note(moved + ' approved post(s) moved to the new posting times (' + slots.map(hhmm).join(', ') + ')');
-  }
+  const done = await db.query(
+    "INSERT INTO branding (cfg_key, cfg_value) VALUES ('slots_fitted_for', ?) ON DUPLICATE KEY UPDATE cfg_value = VALUES(cfg_value)",
+    [key]
+  );
+  if (done !== null) note('posting times ' + key + ': ' + moved + ' approved post(s) moved onto them');
   return moved;
 }
 
@@ -1103,7 +1115,7 @@ async function tick() {
   state.loopBusy = true;
   try {
     state.lastLoopAt = Date.now();
-    await moveOffOldSlots(); // also while OFF - it only corrects the times
+    await fitToSchedule(); // also while OFF - it only corrects the times
     if (!(await isOn())) return;
     await sweep();
     await clipSoundsOffOnce();
@@ -1178,7 +1190,9 @@ async function status(schedulerStatus) {
     // how each platform's posts go out: direct | drafts (TikTok) | wait
     routes,
     settings: {
-      publish_slots: parseSlots(cfg.publish_slots).map((m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0')),
+      publish_slots: dayparts.parseWindows(cfg.publish_slots).map(dayparts.windowLabel),
+      // every window with its part of the day and each platform's time in it
+      publish_waves: dayparts.waves(cfg.publish_slots),
       sound_mode: String(cfg.sound_mode || 'rotate'),
       autoprep_buffer: Number(cfg.autoprep_buffer) || 5,
       montages: montageOn(cfg),
@@ -1247,7 +1261,7 @@ module.exports = {
   saveAnalysis, onJobStatus, prepareAgain, usePair, skip, forgetFrames,
   start, status, listPreps, handStaged, PREP_DIR,
   tick, // exported for the test harness
-  moveOffOldSlots, // test harness
+  fitToSchedule, // test harness
   _preparingCount: preparingCount, // test harness
   _cleanPlan: cleanPlan // test harness
 };

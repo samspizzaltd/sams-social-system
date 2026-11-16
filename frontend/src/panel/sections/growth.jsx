@@ -636,6 +636,45 @@ function RealAudience() {
   );
 }
 
+// Growth Intelligence -> Posting Schedule: the posting windows the system uses
+// (Settings -> publish_slots) and each platform's time in them (owner
+// 2026-11-16: three posts a day, 09:30-10:00 / 12:45-13:00 / 16:00-19:00).
+function PostingTimes() {
+  const [waves, setWaves] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.get('/api/autopilot')
+      .then((r) => { if (alive) setWaves((r.data.settings && r.data.settings.publish_waves) || []); })
+      .catch((e) => { if (alive) setError(e.response?.data?.error || e.message); });
+    return () => { alive = false; };
+  }, []);
+  if (error) return <ErrorBox error={error} />;
+  if (!waves) return <Loading />;
+  if (!waves.length) return null; // the server is older than the posting windows
+  const order = ['instagram', 'facebook_page', 'tiktok', 'youtube'];
+  return (
+    <div className="cp-card">
+      <h3>Your posting times (Tbilisi) - {waves.length} posts a day on every platform</h3>
+      <div className="cp-table-scroll">
+        <table className="cp-table">
+          <thead><tr><th>Window</th><th>Sound on Instagram</th>{order.map((k) => <th key={k}>{PLATFORM_LABEL[k]}</th>)}</tr></thead>
+          <tbody>
+            {waves.map((w) => (
+              <tr key={w.window}>
+                <td><strong>{w.window}</strong></td>
+                <td>{w.part === 'morning' ? 'Fairouz' : 'Trending'}</td>
+                {order.map((k) => <td key={k}>{(w.times && w.times[k]) || '—'}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="cp-muted">One post per platform in every window, the same times every day. Change the windows in Settings → Brand &amp; automation → Posting times; approved posts move onto new times by themselves.</p>
+    </div>
+  );
+}
+
 // ---------- Growth Intelligence ----------
 
 export function GrowthSection({ view }) {
@@ -651,6 +690,7 @@ export function GrowthSection({ view }) {
   if (view === 'schedule') {
     return (
       <div>
+        <PostingTimes />
         <RealWhatWorked view="schedule" />
         <div className="cp-card">
           <h3>Suggested posting times (Claude's research, not measured)</h3>
@@ -909,7 +949,7 @@ export function SettingsSection({ view }) {
       { key: 'auto_cycle_enabled', label: 'Auto-run cycles (true / false)', placeholder: 'false' },
       { key: 'auto_cycle_times', label: 'Auto-cycle times, Tbilisi (comma-separated HH:MM)', placeholder: '09:30' },
       { key: 'auto_cycle_days', label: 'Auto-cycle days (all, or e.g. Sun,Mon)', placeholder: 'all' },
-      { key: 'publish_slots', label: 'Posting slots, Tbilisi (comma-separated HH:MM - one post per platform per slot)', placeholder: '12:30,19:00' },
+      { key: 'publish_slots', label: 'Posting times, Tbilisi - windows, comma-separated (HH:MM-HH:MM, or one time HH:MM). One post per platform per window: Instagram at the start, then Facebook, TikTok, YouTube spread to the end. Before 12:00 = morning (Fairouz on Instagram), later = trending sound', placeholder: '09:30-10:00,12:45-13:00,16:00-19:00' },
       { key: 'sound_mode', label: 'Sounds on autopilot edits (rotate = circulate the Sound Library, own = keep the sound each video came with)', placeholder: 'rotate' },
       { key: 'autoprep_buffer', label: 'Prepared videos allowed to wait for your review at once', placeholder: '5' }
     ];

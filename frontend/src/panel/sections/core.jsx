@@ -148,7 +148,9 @@ export function AutopilotCard({ goTo }) {
 
   const c = ap.counts || {};
   const on = !!ap.enabled;
-  const slots = (ap.settings && ap.settings.publish_slots ? ap.settings.publish_slots : []).join(' and ');
+  // "09:30–10:00, 12:45–13:00 and 16:00–19:00" (posting windows, 2026-11-16)
+  const slotList = ap.settings && Array.isArray(ap.settings.publish_slots) ? ap.settings.publish_slots : [];
+  const slots = slotList.length > 1 ? slotList.slice(0, -1).join(', ') + ' and ' + slotList[slotList.length - 1] : slotList.join('');
   const publisherOk = ap.publisher_last_tick_s !== null && ap.publisher_last_tick_s < 120;
   const workerSeen = ago(ap.worker_last_seen_s);
   const workerOk = ap.worker_last_seen_s !== null && ap.worker_last_seen_s < 180;
@@ -178,7 +180,7 @@ export function AutopilotCard({ goTo }) {
             {on
               ? 'Your library videos are being prepared (captions written from the video, branded edit, sounds circulated)' +
                 (montages ? ', short clips are put together into montages cut to music,' : '') +
-                ' and land in the Publish Queue for your approval. Approved posts go out at ' + (slots || 'the posting slots') + ' Tbilisi time.'
+                ' and land in the Publish Queue for your approval. Approved posts go out ' + (slotList.length ? slotList.length + ' times a day: ' + slots : 'at the posting slots') + ' Tbilisi time.'
               : 'Nothing new is prepared and nothing goes out. Posts you approve wait in the queue until you switch it on. (An upload that already started finishes - TikTok and YouTube cannot call one back.)'}
           </div>
         </div>

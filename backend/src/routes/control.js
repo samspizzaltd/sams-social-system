@@ -124,6 +124,7 @@ const SETTING_CHOICES = { tiktok_route: ['wait', 'drafts'], montage_enabled: ['t
 // Settings that are a number in a range (services/montage.js clipMaxSeconds).
 const SETTING_RANGES = { montage_clip_max_seconds: [3, 60] };
 const brandConfig = require('../services/brandConfig');
+const dayparts = require('../services/dayparts');
 
 router.get('/settings', async (req, res) => {
   const rows = await db.query('SELECT cfg_key, cfg_value, updated_at FROM branding');
@@ -144,6 +145,9 @@ router.put('/settings', async (req, res) => {
   if (SETTING_CHOICES[b.key] && !SETTING_CHOICES[b.key].includes(String(b.value))) {
     return res.status(400).json({ error: b.key + ' must be one of: ' + SETTING_CHOICES[b.key].join(', ') });
   }
+  // Posting windows: a typo must not quietly fall back to other times.
+  const slotsProblem = b.key === 'publish_slots' ? dayparts.checkSlotsText(b.value) : null;
+  if (slotsProblem) return res.status(400).json({ error: slotsProblem });
   const range = SETTING_RANGES[b.key];
   if (range && !(Number(b.value) >= range[0] && Number(b.value) <= range[1])) {
     return res.status(400).json({ error: b.key + ' must be a number from ' + range[0] + ' to ' + range[1] });

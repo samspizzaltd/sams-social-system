@@ -21,7 +21,9 @@ const DEFAULTS = {
   auto_cycle_days: 'all',
   // Autopilot (2026-11-06). The master switch itself (system_enabled) is read
   // by services/autopilot.js directly, never through this 60 s cache.
-  publish_slots: '12:30,19:00', // Tbilisi times; one post per platform per slot
+  // Tbilisi posting windows (owner 2026-11-16: three posts a day); one post per
+  // platform per window, Instagram first, then Facebook, TikTok, YouTube (dayparts.js)
+  publish_slots: '09:30-10:00,12:45-13:00,16:00-19:00',
   sound_mode: 'rotate', // rotate = circulate the library's sounds; own = keep each video's sound
   autoprep_buffer: '5', // prepared videos allowed to wait for review at once
   // How approved TikTok posts go out while TikTok has not audited the app

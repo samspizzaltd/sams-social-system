@@ -186,6 +186,9 @@ const STATUS_PILL = {
   dropped: 'err'
 };
 
+// YouTube: "public" when the channel may post publicly, else nothing preset.
+const publicIfAllowed = (options) => (Array.isArray(options) && options.includes('public') ? 'public' : '');
+
 export function PublishQueue() {
   const [queue, setQueue] = useState(null);
   const [media, setMedia] = useState([]);
@@ -195,7 +198,8 @@ export function PublishQueue() {
   const [busy, setBusy] = useState(0);
   const [form, setForm] = useState({ media_id: '', caption: '', instagram: true, facebook_page: false, tiktok: false, youtube: false });
   // TikTok approve sheet: TikTok's rules require showing the creator info and
-  // letting the owner pick privacy + interaction settings per post.
+  // letting the owner pick privacy + interaction settings per post. Through the
+  // business interface every post is public, so "Everyone (public)" is preset.
   const [tkSheet, setTkSheet] = useState(null);
   // YouTube approve sheet: a title (YouTube requires one) and who can watch.
   const [ytSheet, setYtSheet] = useState(null);
@@ -361,7 +365,9 @@ export function PublishQueue() {
     setYtSheet({ id: row.id, loading: true, title, privacy_status: '', when: row.prep_media_id ? 'slot' : 'now' });
     try {
       const r = await api.get('/api/youtube/channel-info');
-      setYtSheet((s) => (s && s.id === row.id ? { ...s, loading: false, channel: r.data.channel, audited: r.data.audited, options: r.data.privacy_options } : s));
+      // Owner 2026-11-16: approve with one tap - Public is preselected when the
+      // channel may post publicly; he changes it himself when a post needs it.
+      setYtSheet((s) => (s && s.id === row.id ? { ...s, loading: false, channel: r.data.channel, audited: r.data.audited, options: r.data.privacy_options, privacy_status: s.privacy_status || publicIfAllowed(r.data.privacy_options) } : s));
     } catch (err) {
       setYtSheet((s) => (s && s.id === row.id ? { ...s, loading: false, error: err.response?.data?.error || err.message } : s));
     }
@@ -399,7 +405,7 @@ export function PublishQueue() {
     }
     if (yt) {
       api.get('/api/youtube/channel-info')
-        .then((r) => patch('yt', { loading: false, channel: r.data.channel, audited: r.data.audited, options: r.data.privacy_options }))
+        .then((r) => patch('yt', { loading: false, channel: r.data.channel, audited: r.data.audited, options: r.data.privacy_options, privacy_status: publicIfAllowed(r.data.privacy_options) }))
         .catch((err) => patch('yt', { loading: false, error: err.response?.data?.error || err.message }));
     }
   };
