@@ -36,6 +36,8 @@ const state = {
   scanned: 0,
   staged: 0,
   viewLookupFailures: 0,
+  // the same per platform, so the report says which connection needs a look
+  lookupFailuresBy: {},
   downloadedBytes: 0,
   log: [],
   skipped: [],
@@ -52,6 +54,20 @@ function note(msg) {
   if (state.log.length > 200) state.log.shift();
   console.log('[harvest] ' + msg);
 }
+
+// A view number that could not be read (dead token, missing permission, rate
+// limit). A failed lookup is NOT 0 views - it is counted per platform so it
+// does not masquerade as 'no qualifying videos'.
+function lookupFailed(platform) {
+  state.viewLookupFailures++;
+  state.lookupFailuresBy[platform] = (state.lookupFailuresBy[platform] || 0) + 1;
+}
+const PLATFORM_NAME = { instagram: 'Instagram', facebook_page: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube' };
+const numOrNull = (v) => {
+  if (v === null || v === undefined || v === '' || typeof v === 'object') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
 
 function status() {
   return { ...state, log: state.log.slice(-30), skipped: state.skipped.slice(-30), manual: state.manual.slice(0, 25) };
@@ -113,9 +129,7 @@ async function igViews(mediaId, token) {
       if (v && typeof v.value === 'number') return v.value;
     } catch { /* next metric */ }
   }
-  // A failed lookup is NOT 0 views - count it so a dead token or rate limit
-  // does not masquerade as 'no qualifying videos'.
-  state.viewLookupFailures++;
+  lookupFailed('instagram');
   return 0;
 }
 
@@ -152,13 +166,25 @@ async function igCandidates(minViews) {
   return out;
 }
 
-async function fbViews(videoId, token) {
+// Views of a Facebook Page video. The video's own "views" field needs no
+// extra permission (metrics.js reads it the same way, seen live 2026-11-10).
+// video_insights needs read_insights, which this Page token does not have
+// (Meta 2026-11-16: "(#200) read_insights permission missing") - with only
+// that lookup every Facebook video counted as unreadable and none qualified.
+async function fbViews(video, token) {
+  const own = numOrNull(video.views);
+  if (own !== null) return own;
   try {
-    const j = await graphGet(GRAPH + '/' + videoId + '/video_insights/total_video_views?access_token=' + encodeURIComponent(token));
+    const j = await graphGet(GRAPH + '/' + video.id + '?fields=views&access_token=' + encodeURIComponent(token));
+    const n = numOrNull(j.views);
+    if (n !== null) return n;
+  } catch { /* next way */ }
+  try {
+    const j = await graphGet(GRAPH + '/' + video.id + '/video_insights/total_video_views?access_token=' + encodeURIComponent(token));
     const v = j.data && j.data[0] && j.data[0].values && j.data[0].values[0];
     if (v && typeof v.value === 'number') return v.value;
   } catch { /* fall through */ }
-  state.viewLookupFailures++;
+  lookupFailed('facebook_page');
   return 0;
 }
 
@@ -166,14 +192,27 @@ async function fbCandidates(minViews) {
   const page = await metaPublish.account('facebook_page');
   if (!page) { note('Facebook Page not connected - skipping'); return []; }
   const out = [];
-  let url = GRAPH + '/' + page.business_account_id +
-    '/videos?fields=id,description,source,permalink_url,created_time&limit=50&access_token=' +
-    encodeURIComponent(page.access_token);
+  const FIELDS = 'id,description,source,permalink_url,created_time';
+  const listUrl = (fields) => GRAPH + '/' + page.business_account_id +
+    '/videos?fields=' + fields + '&limit=50&access_token=' + encodeURIComponent(page.access_token);
+  // "views" in the list saves a call per video; should Meta refuse the field
+  // there, list without it and read each video's own field instead.
+  let withViews = true;
+  let url = listUrl(FIELDS + ',views');
   for (let p = 0; p < 3 && url; p++) {
-    const j = await graphGet(url);
+    let j;
+    try {
+      j = await graphGet(url);
+    } catch (err) {
+      if (p > 0 || !withViews) throw err;
+      withViews = false;
+      note('Facebook: the video list refused the views field (' + err.message + ') - reading each video instead');
+      url = listUrl(FIELDS);
+      j = await graphGet(url);
+    }
     for (const v of j.data || []) {
       state.scanned++;
-      const views = await fbViews(v.id, page.access_token);
+      const views = await fbViews(v, page.access_token);
       if (views < minViews) continue;
       if (!v.source) {
         state.skipped.push('FB ' + v.id + ' (' + views + ' views): no downloadable source');
@@ -205,14 +244,14 @@ async function ttCandidates(minViews) {
   if (!(await tiktokBusiness.account())) { note('TikTok (business) not connected - skipping'); return []; }
   const r = await tiktokBusiness.listVideos(8);
   if (!r.ok) {
-    state.viewLookupFailures++;
+    lookupFailed('tiktok');
     note('TikTok: could not read all videos - ' + r.error);
   }
   const out = [];
   for (const v of r.videos || []) {
     state.scanned++;
     const views = Number(v.video_views);
-    if (!Number.isFinite(views)) { state.viewLookupFailures++; continue; }
+    if (!Number.isFinite(views)) { lookupFailed('tiktok'); continue; }
     if (views < minViews || !v.item_id) continue;
     out.push({
       platform: 'tiktok',
@@ -233,7 +272,7 @@ async function ytCandidates(minViews) {
   if (!(await youtubePublish.account())) { note('YouTube not connected - skipping'); return []; }
   const r = await youtubePublish.listUploads(150);
   if (!r.ok) {
-    state.viewLookupFailures++;
+    lookupFailed('youtube');
     note('YouTube: could not read the uploads - ' + r.error);
   }
   const out = [];
@@ -382,6 +421,7 @@ async function runHarvest(minViews, limit, dryRun) {
   state.scanned = 0;
   state.staged = 0;
   state.viewLookupFailures = 0;
+  state.lookupFailuresBy = {};
   state.downloadedBytes = 0;
   state.log = [];
   state.skipped = [];
@@ -392,11 +432,11 @@ async function runHarvest(minViews, limit, dryRun) {
     note('scanning Instagram, Facebook, TikTok and YouTube for videos with >= ' + minViews + ' views (most recent ~150 posts per platform)');
     const [ig, fb] = [await igCandidates(minViews), await fbCandidates(minViews)];
     // One of these two failing must not stop the Instagram/Facebook harvest.
-    const quietly = async (fn, name) => {
-      try { return await fn(minViews); } catch (err) { state.viewLookupFailures++; note(name + ' scan failed: ' + err.message); return []; }
+    const quietly = async (fn, platform) => {
+      try { return await fn(minViews); } catch (err) { lookupFailed(platform); note(PLATFORM_NAME[platform] + ' scan failed: ' + err.message); return []; }
     };
-    const tt = await quietly(ttCandidates, 'TikTok');
-    const yt = await quietly(ytCandidates, 'YouTube');
+    const tt = await quietly(ttCandidates, 'tiktok');
+    const yt = await quietly(ytCandidates, 'youtube');
     // Leave out what was used before BEFORE taking the top N, so old library
     // videos and our own new posts do not use up the places (2026-11-11).
     const all = [];
@@ -448,7 +488,9 @@ async function runHarvest(minViews, limit, dryRun) {
     }
     let doneMsg = 'done' + (dryRun ? ' (check only) - ' + state.wouldStage + ' would be staged, ' : ' - ' + state.staged + ' staged for your review, ') + state.manual.length + ' to save from TikTok/YouTube, ' + state.skipped.length + ' skipped';
     if (state.viewLookupFailures > 0) {
-      doneMsg += ' | WARNING: ' + state.viewLookupFailures + ' view lookups failed (token/permission/rate limit?) - real numbers may be higher';
+      const by = Object.entries(state.lookupFailuresBy).map(([pl, n]) => (PLATFORM_NAME[pl] || pl) + ' ' + n).join(', ');
+      doneMsg += ' | WARNING: ' + state.viewLookupFailures + ' view lookups failed' + (by ? ' (' + by + ')' : '') +
+        ' - token/permission/rate limit? real numbers may be higher';
     }
     note(doneMsg);
   } catch (err) {
