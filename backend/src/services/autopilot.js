@@ -976,11 +976,16 @@ async function usePair(mediaId, index) {
 }
 
 // The owner moves a video to the other part of the day (2026-11-18: "move the
-// morning prep edit to the 09:30 window"). Approving its posts then books the
-// next free slot of that part, and the Instagram post gets a track of that
-// part - a Fairouz song in the morning, a trending sound later (dayparts.js) -
-// which the owner still sees in the approve sheet. Only while every post of it
-// waits for review: an approved post keeps the time and sound he approved.
+// morning prep edit to the 09:30 window"). Its posts take the windows of that
+// part, and the Instagram post a track of that part - a Fairouz song in the
+// morning, a trending sound later (dayparts.js):
+//  - posts waiting for review: approving them books that part's next free slot,
+//    and the Instagram post shows the new track in the approve sheet;
+//  - approved posts not yet uploading: TikTok/YouTube/Facebook move to that
+//    part's next free slot as they are; an approved Instagram post whose sound
+//    belongs to the other part goes back to review with the new track - a post
+//    never goes out with a sound the owner was not shown;
+//  - posts already uploading or out stay where they are.
 async function moveDaypart(mediaId, daypart) {
   const part = dayparts.valid(daypart);
   if (!part) return { status: 400, error: 'daypart must be "morning" or "evening"' };
@@ -988,23 +993,35 @@ async function moveDaypart(mediaId, daypart) {
   if (rows === null) return { status: 503, error: 'Database unavailable' };
   if (!rows.length) return { status: 404, error: 'No preparation for that video' };
   const p = rows[0];
-  if (p.status !== 'staged') return { status: 409, error: 'This video is not waiting for review right now - try again when it is ready' };
-  const posts = await db.query("SELECT id, platform, status, post_options FROM publish_queue WHERE prep_media_id = ? AND status <> 'dropped'", [mediaId]);
+  if (p.status !== 'staged') return { status: 409, error: 'This video is not ready right now - try again when it is' };
+  const posts = await db.query(
+    "SELECT id, platform, status, post_options, creation_id FROM publish_queue WHERE prep_media_id = ? AND status <> 'dropped'", [mediaId]);
   if (posts === null) return { status: 503, error: 'Database unavailable' };
-  if (posts.some((q) => !['pending_review', 'failed'].includes(q.status))) {
-    return { status: 409, error: 'Some posts of this video are already approved or out - they keep the time and sound you approved' };
-  }
-  if (!posts.length) return { status: 409, error: 'No post of this video is waiting for review' };
+  const waiting = (q) => ['pending_review', 'failed'].includes(q.status);
+  const approved = (q) => q.status === 'approved_publishing' && !q.creation_id;
+  const movable = posts.filter((q) => waiting(q) || approved(q));
+  const stays = posts.filter((q) => !waiting(q) && !approved(q)).map((q) => q.id);
+  if (!movable.length) return { status: 409, error: 'Every post of this video is already uploading or out - nothing left to move' };
   let copy = {};
   try { copy = JSON.parse(p.copy_json || '{}') || {}; } catch { copy = {}; }
   const cfg = await brandConfig.get();
   const label = dayparts.label(part, cfg.publish_slots);
-  if (copy.daypart === part) return { status: 200, body: { ok: true, moved: false, daypart: part, label, ig_audio: copy.ig_audio || null } };
+  if (copy.daypart === part) {
+    return { status: 200, body: { ok: true, moved: false, daypart: part, label, ig_audio: copy.ig_audio || null, retimed: [], back_to_review: [], stays } };
+  }
+
+  const parse = (t) => { try { return JSON.parse(t || '{}') || {}; } catch { return {}; } };
+  const fits = (a) => !!(a && a.audio_id) && (part === 'morning' ? dayparts.isFairouz(a) : !dayparts.isFairouz(a));
+  const igPosts = movable.filter((q) => q.platform === 'instagram');
+  // An approved Instagram post whose sound already belongs to the new part keeps it.
+  const keep = igPosts.find((q) => approved(q) && fits(parse(q.post_options).ig_audio));
+  const needsTrack = igPosts.some((q) => q !== keep);
+  const track = needsTrack ? (await dayparts.igTracks(part))[0] || null : null;
+  const shown = keep ? parse(keep.post_options).ig_audio : track;
+  if (shown) copy.ig_audio = { audio_id: shown.audio_id, title: shown.title, artist: shown.artist, audio_type: shown.audio_type };
+  else delete copy.ig_audio;
 
   const from = dayparts.valid(copy.daypart);
-  const track = (await dayparts.igTracks(part))[0] || null;
-  if (track) copy.ig_audio = { audio_id: track.audio_id, title: track.title, artist: track.artist, audio_type: track.audio_type };
-  else delete copy.ig_audio;
   // The writer's own reason, kept from the first move on (a second move must
   // not stack "Before the move" lines).
   if (typeof copy.reason_before_move !== 'string') {
@@ -1015,39 +1032,58 @@ async function moveDaypart(mediaId, daypart) {
   }
   const rest = copy.reason_before_move;
   const kind = part === 'morning' ? 'Fairouz song' : 'trending sound';
-  copy.sound_reason = [
-    label,
-    'Moved here by the owner' + (track ? ' - Instagram: "' + (track.title || track.audio_id) + '".' : ' - no approved ' + kind + ' is free, pick one when you approve.'),
-    rest ? 'Before the move: ' + rest : ''
-  ].filter(Boolean).join(' ');
+  const movedLine = shown
+    ? 'Moved here by the owner - Instagram: "' + (shown.title || shown.audio_id) + '".'
+    : igPosts.length ? 'Moved here by the owner - no approved ' + kind + ' is free, pick one when you approve.' : 'Moved here by the owner.';
+  copy.sound_reason = [label, movedLine, rest ? 'Before the move: ' + rest : ''].filter(Boolean).join(' ');
   copy.daypart = part;
   const upd = await db.query("UPDATE media_prep SET copy_json = ? WHERE media_id = ? AND status = 'staged'", [JSON.stringify(copy), mediaId]);
   if (upd === null) return { status: 503, error: 'Database unavailable' };
   if (!upd.affectedRows) return { status: 409, error: 'The video changed meanwhile - reload' };
 
-  // The Instagram post waiting for review carries the new track (same levels).
-  for (const q of posts) {
-    if (q.platform !== 'instagram') continue;
-    let opts = {};
-    try { opts = JSON.parse(q.post_options || '{}') || {}; } catch { opts = {}; }
-    const old = opts.ig_audio || {};
-    if (track) {
-      opts.ig_audio = {
-        audio_id: track.audio_id, title: track.title, artist: track.artist, audio_type: track.audio_type,
-        audio_volume: old.audio_volume || 100,
-        video_volume: old.video_volume || (p.sound_choice === 'own' ? 35 : 10),
-        fallback: old.fallback !== false
-      };
-    } else {
-      delete opts.ig_audio;
+  const retimed = [];
+  const backToReview = [];
+  let trackUsed = false;
+  for (const q of movable) {
+    const opts = parse(q.post_options);
+    if (q.platform === 'instagram' && q !== keep) {
+      // the new part's track at the same levels
+      const old = opts.ig_audio || {};
+      if (track) {
+        opts.ig_audio = {
+          audio_id: track.audio_id, title: track.title, artist: track.artist, audio_type: track.audio_type,
+          audio_volume: old.audio_volume || 100,
+          video_volume: old.video_volume || (p.sound_choice === 'own' ? 35 : 10),
+          fallback: old.fallback !== false
+        };
+        trackUsed = true;
+      } else {
+        delete opts.ig_audio;
+      }
+      const json = Object.keys(opts).length ? JSON.stringify(opts) : null;
+      if (approved(q)) {
+        const r = await db.query(
+          "UPDATE publish_queue SET status = 'pending_review', scheduled_at = NULL, post_options = ? WHERE id = ? AND status = 'approved_publishing' AND creation_id IS NULL",
+          [json, q.id]);
+        if (r && r.affectedRows) backToReview.push(q.id);
+      } else {
+        await db.query("UPDATE publish_queue SET post_options = ? WHERE id = ? AND status IN ('pending_review','failed')", [json, q.id]);
+      }
+      continue;
     }
-    await db.query("UPDATE publish_queue SET post_options = ? WHERE id = ? AND status IN ('pending_review','failed')",
-      [Object.keys(opts).length ? JSON.stringify(opts) : null, q.id]);
+    if (approved(q)) {
+      const at = await nextFreeSlot(q.platform, part);
+      const r = await db.query(
+        "UPDATE publish_queue SET scheduled_at = ? WHERE id = ? AND status = 'approved_publishing' AND creation_id IS NULL", [at, q.id]);
+      if (r && r.affectedRows) retimed.push({ id: q.id, platform: q.platform, scheduled_at: at });
+    }
   }
-  if (track) await trendSounds.markUsed(track.audio_id);
+  if (trackUsed) await trendSounds.markUsed(track.audio_id);
   note('video #' + mediaId + ': moved to the ' + (part === 'morning' ? 'morning window' : 'afternoon/evening windows') + ' by the owner' +
-    (track ? '; Instagram: "' + (track.title || track.audio_id) + '"' : ''));
-  return { status: 200, body: { ok: true, moved: true, daypart: part, label, ig_audio: copy.ig_audio || null } };
+    (shown ? '; Instagram: "' + (shown.title || shown.audio_id) + '"' : '') +
+    (retimed.length ? '; ' + retimed.length + ' approved post(s) re-timed' : '') +
+    (backToReview.length ? '; the Instagram post is back in review (new sound)' : ''));
+  return { status: 200, body: { ok: true, moved: true, daypart: part, label, ig_audio: copy.ig_audio || null, retimed, back_to_review: backToReview, stays } };
 }
 
 async function skip(mediaId) {

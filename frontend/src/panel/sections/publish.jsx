@@ -517,9 +517,15 @@ export function PublishQueue() {
     setBusy(-mediaId); setError(null); setNotice(null);
     try {
       const r = await api.post(`/api/prep/${mediaId}/daypart`, { daypart });
-      const a = r.data && r.data.ig_audio;
-      setNotice((daypart === 'morning' ? 'Moved to the morning window' : 'Moved to the afternoon/evening windows') +
-        ' - approving its posts books the next free slot there.' +
+      const d = r.data || {};
+      const a = d.ig_audio;
+      const where = daypart === 'morning' ? 'the morning window' : 'the afternoon/evening windows';
+      const name = { instagram: 'Instagram', facebook_page: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube' };
+      const when = (ms) => new Date(Number(ms)).toLocaleString('en-GB', { timeZone: 'Asia/Tbilisi', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+      setNotice(d.moved === false ? 'It already posts in ' + where + '.' :
+        'Moved to ' + where + '.' +
+        ((d.retimed || []).length ? ' New times: ' + d.retimed.map((x) => (name[x.platform] || x.platform) + ' ' + when(x.scheduled_at)).join(', ') + '.' : '') +
+        ((d.back_to_review || []).length ? ' The Instagram post is back here for your OK - it has a new sound.' : '') +
         (a ? ' Instagram: "' + (a.title || a.audio_id) + '".' : ' No approved ' + (daypart === 'morning' ? 'Fairouz song' : 'trending sound') + ' is free - pick one when you approve.'));
       load();
     } catch (err) {
