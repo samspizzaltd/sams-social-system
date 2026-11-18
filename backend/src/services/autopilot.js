@@ -8,6 +8,7 @@ const trendSounds = require('./trendSounds');
 const recommendations = require('./recommendations');
 const montage = require('./montage');
 const dayparts = require('./dayparts');
+const youtubeCut = require('./youtubeCut');
 
 // Autopilot (owner request 2026-11-06): "I have provided you with many videos
 // that are ready for publishing - add your magic when publishing them, and
@@ -385,7 +386,10 @@ function copySchema(opts) {
     hook_start: num, hook_end: num, end_line_start: num, hold_end: num, edit_plan_note: str
   };
   Object.assign(s.properties, extra);
-  s.required = s.required.concat(['sound_pick', 'instagram_sound_pick', 'sound_reason'], Object.keys(extra));
+  // YouTube's own shorter cut, best shot first (youtubeCut.js)
+  const yt = youtubeCut.editFields();
+  Object.assign(s.properties, yt);
+  s.required = s.required.concat(['sound_pick', 'instagram_sound_pick', 'sound_reason'], Object.keys(extra), Object.keys(yt));
   return s;
 }
 
@@ -458,7 +462,7 @@ function fallbackCopy(media) {
     facebook_page: caption,
     tiktok: caption,
     youtube_title: cut(noAngles(useful), 90) + ' #Shorts',
-    youtube_description: noAngles(caption)
+    youtube_description: noAngles(caption) + '\nSubscribe for more from Sam\'s kitchen and share it with a friend.'
   };
 }
 
@@ -516,11 +520,10 @@ async function writeCopy(prep, media, opts) {
       '- instagram: the Instagram caption - a strong first line, 1-3 short lines, then 4-7 relevant hashtags (include #tbilisi).\n' +
       '- facebook_page: the Facebook caption - friendly, 1-3 short lines, at most 3 hashtags.\n' +
       '- tiktok: the TikTok caption - short and punchy, then 3-6 hashtags (include #tbilisi and #fyp).\n' +
-      '- youtube_title: max 90 characters, ends with #Shorts.\n' +
-      '- youtube_description: 1-3 lines plus the address line "Sam\'s - 100 Mirian Mepe St, Tbilisi".\n' +
+      youtubeCut.CAPTION_BRIEF + '\n' +
       'Write in English unless the style notes say otherwise.' +
       (cfg.music_notes ? ' Music approach (for context): ' + cfg.music_notes : '') +
-      (opts && opts.sound ? '\n' + editBrief(analysis, times) + '\n' + soundBrief(opts) : '')
+      (opts && opts.sound ? '\n' + editBrief(analysis, times) + '\n' + youtubeCut.editBrief(analysis.duration) + '\n' + soundBrief(opts) : '')
   });
 
   const out = await claude.generateJSON({ system, prompt: content, schema: copySchema(opts), maxTokens: 4000, effort: 'medium' });
@@ -761,10 +764,29 @@ async function writeNext() {
     await db.query("UPDATE media_prep SET status = 'analyzed' WHERE media_id = ? AND status = 'writing'", [prep.media_id]);
     return;
   }
+  // YouTube's own shorter cut, best shot first (youtubeCut.js) - only while
+  // YouTube takes posts. The worker renders it right after the main edit.
+  let ytJobId = null;
+  if (await youtubeCut.youtubeOn()) {
+    const fromWriter = youtubeCut.planEdit(picks && picks.plan, analysis, plan);
+    const ytPlan = fromWriter || youtubeCut.fallbackEdit(plan, analysis);
+    if (ytPlan) {
+      const t = youtubeCut.texts(picks && picks.plan);
+      const ytParams = youtubeCut.editParams(params, ytPlan, t, cut(media.title || ('video #' + media.id), 100));
+      const yj = await db.query(
+        "INSERT INTO render_jobs (template, params, media_ids, status) VALUES ('MagicCut', ?, ?, 'queued')",
+        [JSON.stringify(ytParams), mediaIds]
+      );
+      if (yj && yj.insertId) {
+        ytJobId = yj.insertId;
+        copy.youtube_cut = youtubeCut.summary(ytPlan, t, !!fromWriter);
+      }
+    }
+  }
   await db.query(
-    "UPDATE media_prep SET status = 'rendering', render_job_id = ?, sound_media_id = ?, sound_choice = ?, copy_json = ?, writer = ?, error = NULL" +
+    "UPDATE media_prep SET status = 'rendering', render_job_id = ?, yt_render_job_id = ?, yt_output_media_id = NULL, sound_media_id = ?, sound_choice = ?, copy_json = ?, writer = ?, error = NULL" +
     " WHERE media_id = ? AND status = 'writing'",
-    [job.insertId, sound ? sound.id : null, choice, JSON.stringify(copy), writer, prep.media_id]
+    [job.insertId, ytJobId, sound ? sound.id : null, choice, JSON.stringify(copy), writer, prep.media_id]
   );
   note('video #' + prep.media_id + ': edit queued (' + (sound ? 'sound: ' + (sound.title || '#' + sound.id) : 'its own sound') +
     (copy.ig_audio ? '; Instagram (' + daypart + '): "' + (copy.ig_audio.title || copy.ig_audio.audio_id) + '"' : '') + ')');
@@ -781,9 +803,12 @@ async function connectedPlatforms() {
   return PLATFORMS.filter((p) => active.has(p) && String(cfg[PLATFORM_SETTING[p]] || '').toLowerCase() !== 'false');
 }
 
-async function stage(prep, outputMediaId) {
+// opts.only: stage just these platforms (YouTube's own cut arriving after the
+// main edit, or YouTube falling back to the main edit - youtubeCut.js).
+async function stage(prep, outputMediaId, opts) {
+  const only = opts && Array.isArray(opts.only) ? opts.only : null;
   const copy = JSON.parse(prep.copy_json || '{}');
-  const platforms = await connectedPlatforms();
+  const platforms = (await connectedPlatforms()).filter((p) => !only || only.includes(p));
   // A platform where the owner already approved (or posted) the raw version
   // of this video meanwhile - or an earlier autopilot version of it (a remake
   // after some posts were approved) - gets no second copy.
@@ -793,16 +818,27 @@ async function stage(prep, outputMediaId) {
     [prep.media_id, prep.media_id]
   );
   const takenSet = new Set((taken || []).map((r) => r.platform));
+  if (only) {
+    // a platform already waiting for review gets no second post
+    const waiting = await db.query(
+      "SELECT DISTINCT platform FROM publish_queue WHERE prep_media_id = ? AND status IN ('pending_review','failed')", [prep.media_id]);
+    for (const r of waiting || []) takenSet.add(r.platform);
+  }
+  // YouTube's own cut (youtubeCut.js): its post waits for that render, then
+  // shows that video.
+  const ytWaits = !!(prep.yt_render_job_id && !prep.yt_output_media_id);
   const staged = [];
   for (const platform of platforms) {
     if (takenSet.has(platform)) continue;
+    if (platform === 'youtube' && ytWaits) continue;
+    const mediaId = platform === 'youtube' && prep.yt_output_media_id ? Number(prep.yt_output_media_id) : outputMediaId;
     const caption = platform === 'youtube' ? copy.youtube_description : copy[platform];
     if (!caption) continue;
-    let opts = null;
-    if (platform === 'youtube') opts = JSON.stringify({ title: copy.youtube_title });
+    let postOpts = null;
+    if (platform === 'youtube') postOpts = JSON.stringify({ title: copy.youtube_title });
     const igAudio = platform === 'instagram' && copy.ig_audio && copy.ig_audio.audio_id ? copy.ig_audio : null;
     if (igAudio) {
-      opts = JSON.stringify({
+      postOpts = JSON.stringify({
         ig_audio: Object.assign({}, igAudio, {
           audio_volume: 100,
           // MagicCut mutes the clip when it lays a circulated sound under it,
@@ -814,7 +850,7 @@ async function stage(prep, outputMediaId) {
     }
     const r = await db.query(
       "INSERT INTO publish_queue (platform, media_id, caption, status, post_options, prep_media_id) VALUES (?,?,?,'pending_review',?,?)",
-      [platform, outputMediaId, String(caption).slice(0, CAPTION_LIMIT[platform]), opts, prep.media_id]
+      [platform, mediaId, String(caption).slice(0, CAPTION_LIMIT[platform]), postOpts, prep.media_id]
     );
     if (r && r.insertId) {
       staged.push(platform);
@@ -829,15 +865,49 @@ async function stage(prep, outputMediaId) {
       [prep.media_id]
     );
   }
+  if (only) {
+    note('video #' + prep.media_id + ': ' + (staged.length ? 'its YouTube post is ready for your review' : 'YouTube cut finished - YouTube already has a post of it'));
+    return;
+  }
   const err = platforms.length ? null : 'No platform is connected - connect one in Settings → Platform Connections, then press "Prepare again"';
   await db.query('UPDATE media_prep SET error = ? WHERE media_id = ?', [err, prep.media_id]);
-  note('video #' + prep.media_id + ': ready for your review on ' + (staged.length ? staged.join(', ') : 'no platform'));
+  const ytLater = ytWaits && platforms.includes('youtube') && !takenSet.has('youtube');
+  note('video #' + prep.media_id + ': ready for your review on ' + (staged.length ? staged.join(', ') : 'no platform') +
+    (ytLater ? ' (YouTube: its own shorter cut is still being made)' : ''));
+}
+
+// YouTube's own cut finished or failed (youtubeCut.js). Done: its YouTube post
+// goes into review with that video - or, while the main edit is still being
+// made, stage() picks it up then. Failed (or no video came back): YouTube gets
+// the full edit instead.
+async function onYouTubeCut(p, jobId, status, outputMediaId, error) {
+  const out = Number(outputMediaId);
+  if (status === 'done' && Number.isInteger(out) && out > 0) {
+    const upd = await db.query('UPDATE media_prep SET yt_output_media_id = ? WHERE media_id = ? AND yt_render_job_id = ?', [out, p.media_id, jobId]);
+    if (!upd || !upd.affectedRows) return;
+    if (p.status === 'staged' && p.output_media_id) {
+      await stage(Object.assign({}, p, { yt_output_media_id: out }), Number(p.output_media_id), { only: ['youtube'] });
+    }
+    return;
+  }
+  if (status !== 'done' && status !== 'failed') return;
+  const upd = await db.query('UPDATE media_prep SET yt_render_job_id = NULL, yt_output_media_id = NULL WHERE media_id = ? AND yt_render_job_id = ?', [p.media_id, jobId]);
+  if (!upd || !upd.affectedRows) return;
+  note('video #' + p.media_id + ': the YouTube cut failed on the PC (' + String(error || 'no video came back').slice(0, 160) + ') - YouTube gets the full edit');
+  if (p.status === 'staged' && p.output_media_id) {
+    await stage(Object.assign({}, p, { yt_render_job_id: null, yt_output_media_id: null }), Number(p.output_media_id), { only: ['youtube'] });
+  }
 }
 
 async function onJobStatus(jobId, status, outputMediaId, error) {
   jobId = Number(jobId);
   if (!Number.isInteger(jobId)) return;
   try {
+    const ytRows = await db.query('SELECT * FROM media_prep WHERE yt_render_job_id = ?', [jobId]);
+    if (ytRows && ytRows.length) {
+      await onYouTubeCut(ytRows[0], jobId, status, outputMediaId, error);
+      return;
+    }
     if (status === 'failed') {
       await db.query(
         "UPDATE media_prep SET status = 'failed', error = ? WHERE analyze_job_id = ? AND status = 'analyzing'",
@@ -920,7 +990,7 @@ async function prepareAgain(mediaId, sound) {
   const hasFrames = fs.existsSync(path.join(PREP_DIR, String(mediaId)));
   const nextStatus = p.analysis && hasFrames ? 'analyzed' : 'queued';
   await db.query(
-    'UPDATE media_prep SET status = ?, sound_choice = ?, render_job_id = NULL, output_media_id = NULL, error = NULL WHERE media_id = ?',
+    'UPDATE media_prep SET status = ?, sound_choice = ?, render_job_id = NULL, output_media_id = NULL, yt_render_job_id = NULL, yt_output_media_id = NULL, error = NULL WHERE media_id = ?',
     [nextStatus, choice, mediaId]
   );
   return { status: 200, body: { ok: true, status: nextStatus } };
@@ -1127,6 +1197,13 @@ async function sweep() {
     "UPDATE media_prep p LEFT JOIN render_jobs r ON r.id = p.render_job_id SET p.status = 'analyzed'" +
     " WHERE p.status = 'rendering' AND r.id IS NULL"
   );
+  // A YouTube cut whose job was deleted from the Render Queue: YouTube gets
+  // the full edit instead of waiting for ever.
+  const lost = await db.query(
+    'SELECT p.* FROM media_prep p LEFT JOIN render_jobs r ON r.id = p.yt_render_job_id' +
+    ' WHERE p.yt_render_job_id IS NOT NULL AND p.yt_output_media_id IS NULL AND r.id IS NULL'
+  );
+  for (const p of lost || []) await onYouTubeCut(p, Number(p.yt_render_job_id), 'failed', null, 'its render job was removed');
 }
 
 // One-time (2026-11-14, montages): sounds already taken from short clips leave
@@ -1356,6 +1433,7 @@ async function handStaged() {
 async function listPreps() {
   const rows = await db.query(
     "SELECT p.media_id, p.status, p.error, p.writer, p.sound_choice, p.sound_media_id, p.own_sound_id, p.output_media_id, p.montage_id," +
+    " p.yt_render_job_id, p.yt_output_media_id," +
     " p.copy_json, p.analysis, p.updated_at, m.title AS media_title, m.kind AS media_kind, m.note AS media_note," +
     " s.title AS sound_title, s.url_path AS sound_url" +
     " FROM media_prep p LEFT JOIN media m ON m.id = p.media_id LEFT JOIN media s ON s.id = p.sound_media_id" +

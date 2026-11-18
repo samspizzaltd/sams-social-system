@@ -6,6 +6,7 @@ const claude = require('./claudeClient');
 const recommendations = require('./recommendations');
 const trendSounds = require('./trendSounds');
 const dayparts = require('./dayparts');
+const youtubeCut = require('./youtubeCut');
 
 // Montages (owner 2026-11-14): "when adding small video clips I expect the
 // system to put them together to create a video that is viral, choose good
@@ -336,8 +337,11 @@ function editSchema(ids, trends) {
     type: 'object',
     additionalProperties: false,
     required: ['what_it_shows', 'hook', 'end_line', 'alt_hook_1', 'alt_end_line_1', 'alt_hook_2', 'alt_end_line_2',
-      'instagram', 'facebook_page', 'tiktok', 'youtube_title', 'youtube_description', 'moments', 'instagram_sound_pick', 'edit_plan_note'],
+      'instagram', 'facebook_page', 'tiktok', 'youtube_title', 'youtube_description', 'moments', 'instagram_sound_pick', 'edit_plan_note',
+      'yt_best_clip', 'yt_question', 'yt_end_line'],
     properties: {
+      // YouTube's own shorter cut, best moment first (youtubeCut.js)
+      ...youtubeCut.montageFields(ids),
       what_it_shows: str, hook: str, end_line: str,
       alt_hook_1: str, alt_end_line_1: str, alt_hook_2: str, alt_end_line_2: str,
       instagram: str, facebook_page: str, tiktok: str, youtube_title: str, youtube_description: str,
@@ -400,8 +404,10 @@ async function edit(picked, recs, trends, daypart) {
       'hook: on-screen text for the first 2-3 seconds, max 6 words, makes people stop scrolling. end_line: on-screen text for the last 3 seconds, max 6 words (an invitation to come by). ' +
         'alt_hook_1/alt_end_line_1 and alt_hook_2/alt_end_line_2: two more, clearly different pairs. No hashtags, no emoji in any of the six.',
       'instagram: a strong first line, 1-3 short lines, then 4-7 relevant hashtags (include #tbilisi). facebook_page: friendly, 1-3 short lines, at most 3 hashtags. ' +
-        'tiktok: short and punchy, then 3-6 hashtags (include #tbilisi and #fyp). youtube_title: max 90 characters, ends with #Shorts. youtube_description: 1-3 lines plus "Sam\'s - 100 Mirian Mepe St, Tbilisi".',
+        'tiktok: short and punchy, then 3-6 hashtags (include #tbilisi and #fyp).',
+      youtubeCut.CAPTION_BRIEF,
       'edit_plan_note: one or two short sentences for the owner - the story of the cut and where the payoff is.',
+      youtubeCut.montageBrief(),
       'Write in English unless the style notes say otherwise.'
     ].concat(capRecs ? ['', capRecs] : [], trendLines).join('\n')
   });
@@ -419,7 +425,7 @@ function fallbackCopy() {
     facebook_page: caption,
     tiktok: caption + ' #fyp',
     youtube_title: "Fresh from Sam's kitchen #Shorts",
-    youtube_description: caption
+    youtube_description: caption + "\nSubscribe for more from Sam's kitchen and share it with a friend."
   };
 }
 
@@ -528,12 +534,29 @@ async function planNext({ preparingCount }) {
   const mediaIds = ids.concat(picked.music ? [picked.music.id] : []).join(',');
   const analysis = { duration: plan.duration, width: 1080, height: 1920, has_audio: true, frames: 0, montage: true, clips: ids };
   const job = await db.query("INSERT INTO render_jobs (template, params, media_ids, status) VALUES ('MagicCut', ?, ?, 'queued')", [JSON.stringify(params), mediaIds]);
+  // YouTube's own shorter cut, best moment first (youtubeCut.js) - only while
+  // YouTube takes posts. The worker renders it right after the montage.
+  let ytJobId = null;
+  if (job && job.insertId && await youtubeCut.youtubeOn()) {
+    const ytPlan = youtubeCut.planMontage(plan, out && out.yt_best_clip);
+    if (ytPlan) {
+      const t = youtubeCut.texts(out);
+      const ytIds = [...new Set(ytPlan.segments.map((s) => s.media_id))];
+      const yj = await db.query("INSERT INTO render_jobs (template, params, media_ids, status) VALUES ('MagicCut', ?, ?, 'queued')",
+        [JSON.stringify(youtubeCut.montageParams(params, ytPlan, t, title)), ytIds.concat(picked.music ? [picked.music.id] : []).join(',')]);
+      if (yj && yj.insertId) {
+        ytJobId = yj.insertId;
+        copy.youtube_cut = youtubeCut.summary(ytPlan, t, !!(out && out.yt_best_clip && String(ytPlan.best_clip) === String(out.yt_best_clip)));
+      }
+    }
+  }
   const prep = job && job.insertId ? await db.query(
-    "INSERT INTO media_prep (media_id, status, render_job_id, sound_media_id, sound_choice, analysis, copy_json, writer) VALUES (?, 'rendering', ?, ?, ?, ?, ?, ?)",
-    [montageId, job.insertId, picked.music ? picked.music.id : null, picked.music ? 'rotated' : 'own', JSON.stringify(analysis), JSON.stringify(copy), writer]
+    "INSERT INTO media_prep (media_id, status, render_job_id, yt_render_job_id, sound_media_id, sound_choice, analysis, copy_json, writer) VALUES (?, 'rendering', ?, ?, ?, ?, ?, ?, ?)",
+    [montageId, job.insertId, ytJobId, picked.music ? picked.music.id : null, picked.music ? 'rotated' : 'own', JSON.stringify(analysis), JSON.stringify(copy), writer]
   ) : null;
   if (!prep) {
     if (job && job.insertId) await db.query("DELETE FROM render_jobs WHERE id = ? AND status = 'queued'", [job.insertId]);
+    if (ytJobId) await db.query("DELETE FROM render_jobs WHERE id = ? AND status = 'queued'", [ytJobId]);
     await release(montageId);
     await db.query("DELETE FROM media WHERE id = ? AND kind = 'montage'", [montageId]);
     return;
@@ -673,14 +696,31 @@ async function resound(row, cfg, opts) {
   const ids = [...new Set(plan.segments.map((s) => s.media_id))];
   const job = await db.query("INSERT INTO render_jobs (template, params, media_ids, status) VALUES ('MagicCut', ?, ?, 'queued')", [JSON.stringify(params), ids.concat([track.id]).join(',')]);
   if (!job || !job.insertId) return false;
+  // Its YouTube cut is made again with the new music (youtubeCut.js); without
+  // one YouTube gets the new full montage - never the old music.
+  let ytJobId = null;
+  if (copy.youtube_cut && await youtubeCut.youtubeOn()) {
+    const ytPlan = youtubeCut.planMontage(plan, copy.youtube_cut.best_clip);
+    if (ytPlan) {
+      const t = youtubeCut.texts({ yt_question: copy.youtube_cut.question, yt_end_line: copy.youtube_cut.end_line });
+      const ytIds = [...new Set(ytPlan.segments.map((s) => s.media_id))];
+      const yj = await db.query("INSERT INTO render_jobs (template, params, media_ids, status) VALUES ('MagicCut', ?, ?, 'queued')",
+        [JSON.stringify(youtubeCut.montageParams(params, ytPlan, t, title)), ytIds.concat([track.id]).join(',')]);
+      if (yj && yj.insertId) {
+        ytJobId = yj.insertId;
+        copy.youtube_cut = youtubeCut.summary(ytPlan, t, copy.youtube_cut.best_first);
+      }
+    }
+  }
   const analysis = { duration: plan.duration, width: 1080, height: 1920, has_audio: true, frames: 0, montage: true, clips: ids };
   const upd = await db.query(
-    "UPDATE media_prep SET status = 'rendering', render_job_id = ?, sound_media_id = ?, sound_choice = 'rotated', analysis = ?, copy_json = ?, error = NULL" +
+    "UPDATE media_prep SET status = 'rendering', render_job_id = ?, yt_render_job_id = ?, yt_output_media_id = NULL, sound_media_id = ?, sound_choice = 'rotated', analysis = ?, copy_json = ?, error = NULL" +
     " WHERE media_id = ? AND status = 'staged'",
-    [job.insertId, track.id, JSON.stringify(analysis), JSON.stringify(copy), row.media_id]
+    [job.insertId, ytJobId, track.id, JSON.stringify(analysis), JSON.stringify(copy), row.media_id]
   );
   if (!upd || !upd.affectedRows) {
     await db.query("DELETE FROM render_jobs WHERE id = ? AND status = 'queued'", [job.insertId]);
+    if (ytJobId) await db.query("DELETE FROM render_jobs WHERE id = ? AND status = 'queued'", [ytJobId]);
     return false;
   }
   await db.query(

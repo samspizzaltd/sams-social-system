@@ -60,6 +60,12 @@ function MagicNote({ prep, busy, onRemake, onUsePair, onMove }) {
           {copy.ig_audio.artist ? ' - ' + copy.ig_audio.artist : ''} (Instagram adds it when it posts)
         </div>
       )}
+      {copy.youtube_cut && (prep.yt_render_job_id || prep.yt_output_media_id) && (
+        <div>
+          <strong>YouTube:</strong> its own {sec(copy.youtube_cut.duration)} cut{copy.youtube_cut.best_first ? ' that opens on the best shot' : ''}, with a
+          question and a call to subscribe and share - {prep.yt_output_media_id ? 'in its own card' : 'being made on your PC…'}
+        </div>
+      )}
       {prep.status === 'staged' && onMove && (copy.daypart === 'morning' || copy.daypart === 'evening') && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 2 }}>
           <span><strong>Posts in:</strong> {copy.daypart === 'morning' ? 'the morning window' : 'the afternoon/evening windows'}</span>
@@ -129,6 +135,22 @@ function MagicNote({ prep, busy, onRemake, onUsePair, onMove }) {
         </div>
       )}
       {prep.status !== 'staged' && <div className="cp-muted">A new version is being made ({prep.status})…</div>}
+    </div>
+  );
+}
+
+// YouTube's own shorter cut (backend youtubeCut.js, owner 2026-11-18): best
+// shot first, a question to answer in the comments, a call to subscribe and
+// share. Instagram, Facebook and TikTok get the full edit.
+function YouTubeCutNote({ prep }) {
+  const c = (parseJson(prep.copy_json) || {}).youtube_cut || {};
+  return (
+    <div className="cp-magic-note">
+      <div>
+        <strong>YouTube's own cut:</strong> {c.duration ? sec(c.duration) + ', ' : ''}
+        {c.best_first ? 'opens on its best shot' : 'the start of the edit'} - Instagram, Facebook and TikTok get the full edit.
+      </div>
+      {c.question && <div><strong>On screen:</strong> "{c.question}" at the start → "{c.end_line}" at the end</div>}
     </div>
   );
 }
@@ -396,7 +418,9 @@ export function PublishQueue() {
     setGroupSheet({
       media_id: g.media_id,
       ids: pending.map((q) => q.id),
-      when: g.prep ? 'slot' : 'now',
+      // autopilot posts (also YouTube's own cut, whose card has no g.prep) go
+      // out at their posting slot
+      when: g.prep || g.ytPrep || pending.some((q) => q.prep_media_id) ? 'slot' : 'now',
       tk: wantTk ? { loading: true, privacy_level: '', disable_comment: false, disable_duet: false, disable_stitch: false, brand_organic: true } : null,
       yt: yt ? {
         loading: true,
@@ -627,6 +651,8 @@ export function PublishQueue() {
     g.rows.push(q);
     if (q.prep_media_id && preps[q.prep_media_id] && Number(preps[q.prep_media_id].output_media_id) === Number(q.media_id)) {
       g.prep = preps[q.prep_media_id];
+    } else if (q.prep_media_id && preps[q.prep_media_id] && Number(preps[q.prep_media_id].yt_output_media_id) === Number(q.media_id)) {
+      g.ytPrep = preps[q.prep_media_id]; // YouTube's own cut - its own card, its own video
     }
   }
 
@@ -1151,6 +1177,7 @@ export function PublishQueue() {
                 <div className="cp-content-head">
                   <strong>{g.title || 'video #' + g.media_id}</strong>
                   {g.prep && <span className="cp-pill ok">✨ prepared by autopilot</span>}
+                  {g.ytPrep && <span className="cp-pill ok">▶ YouTube's own cut</span>}
                 </div>
                 <div className="cp-video-group">
                   <div>
@@ -1160,6 +1187,7 @@ export function PublishQueue() {
                   </div>
                   <div>
                     {g.prep && <MagicNote prep={g.prep} busy={busy} onRemake={remake} onUsePair={usePair} onMove={moveDaypart} />}
+                    {g.ytPrep && <YouTubeCutNote prep={g.ytPrep} />}
                     {g.rows.map(renderRow)}
                     {renderGroupSheet(g)}
                   </div>

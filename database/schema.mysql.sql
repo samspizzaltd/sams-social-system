@@ -314,3 +314,11 @@ ALTER TABLE media ADD COLUMN ai_named_at DATETIME NULL;
 -- in_montage); the montage itself is a media row of kind 'montage' with its
 -- own prep, rendered by MagicCut and reviewed like any prepared video.
 ALTER TABLE media_prep ADD COLUMN montage_id INT NULL;
+
+-- 2026-11-18: YouTube's own cut (services/youtubeCut.js; owner: "make the
+-- youtube edits shorter with the best shot first, also include interactive
+-- questions, and promote following and sharing"). yt_render_job_id = the
+-- worker's MagicCut job of the shorter YouTube render; yt_output_media_id =
+-- that video. NULL = YouTube gets the main edit.
+ALTER TABLE media_prep ADD COLUMN yt_render_job_id INT NULL;
+ALTER TABLE media_prep ADD COLUMN yt_output_media_id INT NULL;
