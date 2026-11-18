@@ -81,6 +81,17 @@ router.post('/prep/:mediaId/use-pair', async (req, res) => {
   res.json(r.body);
 });
 
+// POST /api/prep/:mediaId/daypart {daypart: 'morning'|'evening'} - the owner
+// moves a video waiting for review to the other part of the day (its posting
+// windows and its Instagram track - autopilot.moveDaypart).
+router.post('/prep/:mediaId/daypart', async (req, res) => {
+  const id = Number(req.params.mediaId);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid video id' });
+  const r = await autopilot.moveDaypart(id, req.body && req.body.daypart);
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  res.json(r.body);
+});
+
 // POST /api/prep/:mediaId/skip - never prepare or post this video
 router.post('/prep/:mediaId/skip', async (req, res) => {
   const id = Number(req.params.mediaId);

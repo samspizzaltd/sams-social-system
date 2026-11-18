@@ -37,7 +37,7 @@ function planText(plan) {
     ' · ' + sec(plan.duration) + ' in total';
 }
 
-function MagicNote({ prep, busy, onRemake, onUsePair }) {
+function MagicNote({ prep, busy, onRemake, onUsePair, onMove }) {
   const copy = parseJson(prep.copy_json) || {};
   const options = Array.isArray(copy.hook_options) ? copy.hook_options : [];
   const chosen = Number(copy.chosen_pair || 0);
@@ -56,8 +56,17 @@ function MagicNote({ prep, busy, onRemake, onUsePair }) {
       </div>
       {copy.ig_audio && (
         <div>
-          <strong>Instagram:</strong> trending sound "{copy.ig_audio.title || copy.ig_audio.audio_id}"
+          <strong>Instagram:</strong> {copy.daypart === 'morning' ? 'Fairouz song' : 'trending sound'} "{copy.ig_audio.title || copy.ig_audio.audio_id}"
           {copy.ig_audio.artist ? ' - ' + copy.ig_audio.artist : ''} (Instagram adds it when it posts)
+        </div>
+      )}
+      {prep.status === 'staged' && onMove && (copy.daypart === 'morning' || copy.daypart === 'evening') && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 2 }}>
+          <span><strong>Posts in:</strong> {copy.daypart === 'morning' ? 'the morning window' : 'the afternoon/evening windows'}</span>
+          <ConfirmButton className="cp-btn small ghost" disabled={!!busy}
+            label={copy.daypart === 'morning' ? 'Move to afternoon/evening' : 'Move to the morning window'}
+            confirmLabel={copy.daypart === 'morning' ? 'Move it? Instagram gets a trending sound' : 'Move it? Instagram gets a Fairouz song'}
+            onConfirm={() => onMove(prep.media_id, copy.daypart === 'morning' ? 'evening' : 'morning')} />
         </div>
       )}
       {copy.sound_reason && <div><strong>{copy.montage ? 'Why these clips and this music:' : 'Why these sounds:'}</strong> {copy.sound_reason}</div>}
@@ -493,6 +502,25 @@ export function PublishQueue() {
     try {
       await api.post(`/api/prep/${mediaId}/use-pair`, { pair });
       setNotice('Re-editing with that hook - the new version replaces the posts waiting for review and appears here when ready (a few minutes, the video worker on your PC must be running).');
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    } finally {
+      setBusy(0);
+    }
+  };
+
+  // Move a video waiting for review to the other part of the day: its posts
+  // then book that part's windows when approved, and Instagram gets a track of
+  // that part (a Fairouz song in the morning).
+  const moveDaypart = async (mediaId, daypart) => {
+    setBusy(-mediaId); setError(null); setNotice(null);
+    try {
+      const r = await api.post(`/api/prep/${mediaId}/daypart`, { daypart });
+      const a = r.data && r.data.ig_audio;
+      setNotice((daypart === 'morning' ? 'Moved to the morning window' : 'Moved to the afternoon/evening windows') +
+        ' - approving its posts books the next free slot there.' +
+        (a ? ' Instagram: "' + (a.title || a.audio_id) + '".' : ' No approved ' + (daypart === 'morning' ? 'Fairouz song' : 'trending sound') + ' is free - pick one when you approve.'));
       load();
     } catch (err) {
       setError(err.response?.data?.error || err.message);
@@ -1125,7 +1153,7 @@ export function PublishQueue() {
                     ) : <span className="cp-muted">video file missing on the server</span>}
                   </div>
                   <div>
-                    {g.prep && <MagicNote prep={g.prep} busy={busy} onRemake={remake} onUsePair={usePair} />}
+                    {g.prep && <MagicNote prep={g.prep} busy={busy} onRemake={remake} onUsePair={usePair} onMove={moveDaypart} />}
                     {g.rows.map(renderRow)}
                     {renderGroupSheet(g)}
                   </div>
