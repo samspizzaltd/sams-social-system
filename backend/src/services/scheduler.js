@@ -40,6 +40,15 @@ const MISSED_SLOT_MS = 2 * 3600 * 1000;
 // in once the owner posts a waiting video or the oldest leaves the 24 h window.
 const INBOX_FULL_RETRY_MS = 30 * 60 * 1000;
 const INBOX_FULL_NOTE = 'TikTok inbox full (max 5 unposted videos per 24 h): post the waiting ones from TikTok → Inbox. This one retries every 30 min.';
+// A start that failed on a passing problem (network blip, the platform's own
+// 5xx, a rate limit) before anything was created there keeps the owner's
+// approval and tries again (owner 2026-11-21: "add the auto retry" - a YouTube
+// upload failed at 10:00 on "fetch failed"). Only where the start cannot
+// publish anything: Instagram (a container), Facebook (before the finish
+// call), YouTube (no upload session). Never TikTok - its call can publish.
+const START_RETRY_PLATFORMS = ['instagram', 'facebook_page', 'youtube'];
+const START_RETRIES = 3; // after the first try: 4 tries in all
+const START_RETRY_MS = 5 * 60 * 1000;
 
 function tbilisiNow() {
   const d = new Date(Date.now() + TBILISI_OFFSET_MS);
@@ -239,6 +248,15 @@ async function processClaimedRow(row, routes) {
       );
       console.log('[scheduler] row #' + row.id + ' TikTok inbox full - retrying at ' + new Date(retryAt).toISOString());
       return 'inbox_full';
+    }
+    if (!start.ok && start.transient && START_RETRY_PLATFORMS.includes(row.platform) && Number(row.attempts || 0) < START_RETRIES) {
+      const retryAt = Date.now() + START_RETRY_MS;
+      const at = new Date(retryAt + TBILISI_OFFSET_MS).toISOString().slice(11, 16);
+      const tryNo = Number(row.attempts || 0) + 2;
+      await bumpClaimed(row.id, "status = 'approved_publishing', scheduled_at = ?, error = ?, attempts = attempts + 1",
+        [retryAt, 'trying again at ' + at + ' (try ' + tryNo + ' of ' + (START_RETRIES + 1) + ') - ' + String(start.error || '').slice(0, 300)]);
+      console.log('[scheduler] row #' + row.id + ' ' + row.platform + ' start failed on a passing problem (' + start.error + ') - retrying at ' + new Date(retryAt).toISOString());
+      return 'retry';
     }
     if (!start.ok) {
       await bumpClaimed(row.id, "status = 'failed', error = ?, attempts = attempts + 1", [start.error]);

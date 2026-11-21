@@ -48,14 +48,20 @@ async function igCreateContainer(videoUrl, caption, options) {
       }
       const r = await fetch(GRAPH + '/' + ig.business_account_id + '/media', { method: 'POST', body: params });
       const j = await r.json();
-      if (!j.id) return { ok: false, error: (j.error && j.error.message) || 'container creation failed' };
+      if (!j.id) {
+        // Meta marks passing trouble itself (is_transient); a container
+        // publishes nothing, so the publisher may try again (scheduler.js).
+        return { ok: false, transient: !!(j.error && j.error.is_transient) || r.status >= 500, error: (j.error && j.error.message) || 'container creation failed' };
+      }
       return { ok: true, creationId: j.id };
     } catch (err) {
-      return { ok: false, error: err.message };
+      return { ok: false, transient: true, error: err.message };
     }
   };
   const first = await create(!!audio);
-  if (first.ok || !audio || audio.fallback === false) return first;
+  // A passing failure is tried again later WITH the owner's sound - never a
+  // reason to post without it.
+  if (first.ok || !audio || audio.fallback === false || first.transient) return first;
   const again = await create(false);
   if (!again.ok) return again;
   return {
@@ -130,7 +136,9 @@ async function pageStartReel(videoUrl, filename) {
       body: JSON.stringify({ upload_phase: 'start', access_token: page.access_token })
     });
     const sj = await start.json();
-    if (!sj.video_id) return { ok: false, error: (sj.error && sj.error.message) || 'start phase failed' };
+    if (!sj.video_id) {
+      return { ok: false, transient: !!(sj.error && sj.error.is_transient) || start.status >= 500, error: (sj.error && sj.error.message) || 'start phase failed' };
+    }
 
     const localPath = filename ? path.join(MEDIA_DIR, path.basename(filename)) : null;
     let size = 0;
@@ -162,11 +170,13 @@ async function pageStartReel(videoUrl, filename) {
         headers: { Authorization: 'OAuth ' + page.access_token, file_url: videoUrl }
       });
     const uj = await up.json();
-    if (!uj.success) return { ok: false, error: (uj.debug_info && uj.debug_info.message) || 'upload phase failed' };
+    if (!uj.success) return { ok: false, transient: up.status >= 500, error: (uj.debug_info && uj.debug_info.message) || 'upload phase failed' };
 
     return { ok: true, creationId: sj.video_id };
   } catch (err) {
-    return { ok: false, error: err.message };
+    // A network failure before the finish call: the reel was never published,
+    // the publisher may start over shortly (scheduler.js).
+    return { ok: false, transient: true, error: err.message };
   }
 }
 

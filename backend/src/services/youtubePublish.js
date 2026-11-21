@@ -364,7 +364,9 @@ async function startPost(filename, caption, options, persistId) {
       signal: AbortSignal.timeout(30 * 1000)
     });
   } catch (err) {
-    return { ok: false, error: 'upload session failed to open: ' + err.message };
+    // No session opened, nothing uploaded: the publisher may try again
+    // shortly (transient - scheduler.js, owner 2026-11-21 "add the auto retry").
+    return { ok: false, transient: true, error: 'upload session failed to open: ' + err.message };
   }
   if (!init.ok) {
     let msg = 'upload session refused (HTTP ' + init.status + ')';
@@ -372,7 +374,8 @@ async function startPost(filename, caption, options, persistId) {
       const j = await init.json();
       if (j.error && j.error.message) msg = j.error.message;
     } catch { /* keep the HTTP status message */ }
-    return { ok: false, error: msg };
+    // Google's own trouble or a rate limit passes; a refusal (auth, quota) does not.
+    return { ok: false, transient: init.status >= 500 || init.status === 429, error: msg };
   }
   const sessionUrl = init.headers.get('location');
   if (!sessionUrl) return { ok: false, error: 'YouTube did not return an upload session' };
